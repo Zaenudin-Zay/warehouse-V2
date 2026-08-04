@@ -898,6 +898,7 @@ async function doLogin() {
   };
   state.ui.loginError = "";
   if (isCabangAdmin() && state.tab === "pusat") state.tab = "dashboard";
+  await loadData();
   render();
 }
 async function doLogout() {
