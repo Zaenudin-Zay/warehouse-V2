@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Inventory Management</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
@@ -138,7 +139,10 @@
 
 <script>
 // ---------------- utilities ----------------
-const STORAGE_KEY = "gudang-sim-data-v5";
+// === Supabase configuration ===
+const SUPABASE_URL = "https://klczlrjucqmkjrjkbiif.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtsY3pscmp1Y3Fta2pyamtiaWlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4MDU3MjMsImV4cCI6MjEwMTM4MTcyM30.vkIhXVRTshlGPLj3By9EUXAksHm8mGiz1a-u03cqeEc";
+const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 function uid(prefix) { return prefix + "-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8); }
 function fmtDate(d) { return new Date(d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" }); }
@@ -276,7 +280,6 @@ function buildSeed() {
 }
 
 // ---------------- state ----------------
-const SESSION_KEY = "gudang-session-v1";
 const state = {
   data: null,
   session: null,
@@ -290,36 +293,188 @@ const state = {
 };
 
 async function loadData() {
-  try {
-    const res = await window.storage.get(STORAGE_KEY, false);
-    if (res && res.value) {
-      state.data = JSON.parse(res.value);
-      if (!state.data.users || !state.data.users.length) {
-        const seed = buildSeed();
-        state.data.users = seed.users;
-        await persist();
-      }
-      return;
-    }
-  } catch (e) {}
-  const seed = buildSeed();
-  state.data = seed;
-  try { await window.storage.set(STORAGE_KEY, JSON.stringify(seed), false); } catch (e) {}
+  document.getElementById("root").innerHTML =
+    '<div style="padding:60px;text-align:center;color:#94a3b8">Memuat data gudang...</div>';
+
+  const [
+    { data: products,        error: e1 },
+    { data: warehouses,      error: e2 },
+    { data: salesTeamRows,   error: e3 },
+    { data: warehouseStock,  error: e4 },
+    { data: salesStockRows,  error: e5 },
+    { data: transactions,    error: e6 },
+    { data: returItems,      error: e7 },
+    { data: usersRows,       error: e8 },
+  ] = await Promise.all([
+    supabaseClient.from("products").select("*"),
+    supabaseClient.from("warehouses").select("*"),
+    supabaseClient.from("sales_team").select("*"),
+    supabaseClient.from("warehouse_stock").select("*"),
+    supabaseClient.from("sales_stock").select("*"),
+    supabaseClient.from("transactions").select("*").order("date", { ascending: false }),
+    supabaseClient.from("retur_items").select("*").order("date", { ascending: false }),
+    supabaseClient.from("users").select("*"),
+  ]);
+
+  if (e1||e2||e3||e4||e5||e6||e7||e8) {
+    document.getElementById("root").innerHTML =
+      '<div style="padding:60px;text-align:center;color:#e11d48">Gagal memuat data dari server. Periksa koneksi internet Anda.</div>';
+    return;
+  }
+
+  // Map snake_case columns → camelCase JS fields
+  const mappedProducts = (products || []).map(p => ({
+    id: p.id, name: p.name, brand: p.brand, category: p.category,
+    familyPaket: p.family_paket, materialCode: p.material_code,
+    cluster: p.cluster, price: p.price,
+  }));
+
+  // Reconstruct nested stock maps from flat rows
+  const stock = {};
+  (warehouseStock || []).forEach(r => {
+    if (!stock[r.warehouse_id]) stock[r.warehouse_id] = {};
+    stock[r.warehouse_id][r.product_id] = r.qty;
+  });
+
+  const salesStock = {};
+  (salesStockRows || []).forEach(r => {
+    if (!salesStock[r.sales_id]) salesStock[r.sales_id] = {};
+    salesStock[r.sales_id][r.product_id] = r.qty;
+  });
+
+  const mappedTransactions = (transactions || []).map(t => ({
+    id: t.id, type: t.type, date: t.date,
+    from: t.from_location,
+    to:   t.to_location,
+    productId: t.product_id, qty: t.qty, note: t.note,
+  }));
+
+  const mappedReturItems = (returItems || []).map(r => ({
+    id: r.id, productId: r.product_id, qty: r.qty,
+    sourceType: r.source_type, sourceId: r.source_id,
+    reason: r.reason, status: r.status,
+    date: r.date, resolvedDate: r.resolved_date,
+  }));
+
+  const mappedUsers = (usersRows || []).map(u => ({
+    id: u.id, username: u.username, name: u.name,
+    role: u.role, cabangId: u.cabang_id,
+  }));
+
+  state.data = {
+    products: mappedProducts,
+    warehouses: warehouses || [],
+    salesTeam: salesTeamRows || [],
+    stock,
+    salesStock,
+    transactions: mappedTransactions,
+    returItems: mappedReturItems,
+    users: mappedUsers,
+  };
 }
 
 async function restoreSession() {
-  try {
-    const res = await window.storage.get(SESSION_KEY, false);
-    if (res && res.value) {
-      const userId = res.value;
-      const user = state.data.users.find(u => u.id === userId);
-      if (user) state.session = user;
-    }
-  } catch (e) {}
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (!session) return;
+
+  const { data: profile } = await supabaseClient
+    .from("users").select("*").eq("id", session.user.id).single();
+  if (!profile) return;
+
+  state.session = {
+    id: profile.id, username: profile.username, name: profile.name,
+    role: profile.role, cabangId: profile.cabang_id,
+  };
 }
 
-async function persist() {
-  try { await window.storage.set(STORAGE_KEY, JSON.stringify(state.data), false); } catch (e) { console.error("gagal menyimpan", e); }
+// === Supabase persist helpers ===
+async function persistWarehouseStock(warehouseId, productId, qty) {
+  const { error } = await supabaseClient
+    .from("warehouse_stock")
+    .upsert({ warehouse_id: warehouseId, product_id: productId, qty },
+             { onConflict: "warehouse_id,product_id" });
+  if (error) notify("Gagal menyimpan stok gudang: " + error.message, "error");
+}
+
+async function persistSalesStock(salesId, productId, qty) {
+  const { error } = await supabaseClient
+    .from("sales_stock")
+    .upsert({ sales_id: salesId, product_id: productId, qty },
+             { onConflict: "sales_id,product_id" });
+  if (error) notify("Gagal menyimpan stok sales: " + error.message, "error");
+}
+
+async function persistTransaction(trx) {
+  const { error } = await supabaseClient.from("transactions").insert({
+    id: trx.id, type: trx.type, date: trx.date,
+    from_location: trx.from ?? null,
+    to_location:   trx.to   ?? null,
+    product_id: trx.productId, qty: trx.qty, note: trx.note ?? "",
+  });
+  if (error) notify("Gagal menyimpan transaksi: " + error.message, "error");
+}
+
+async function persistReturItem(item) {
+  const row = {
+    id: item.id, product_id: item.productId, qty: item.qty,
+    source_type: item.sourceType, source_id: item.sourceId,
+    reason: item.reason, status: item.status, date: item.date,
+    resolved_date: item.resolvedDate ?? null,
+  };
+  const { error } = await supabaseClient
+    .from("retur_items")
+    .upsert(row, { onConflict: "id" });
+  if (error) notify("Gagal menyimpan retur: " + error.message, "error");
+}
+
+async function persistSalesPerson(person, action) {
+  if (action === "delete") {
+    const { error: e1 } = await supabaseClient.from("sales_stock").delete().eq("sales_id", person.id);
+    const { error: e2 } = await supabaseClient.from("sales_team").delete().eq("id", person.id);
+    if (e1||e2) notify("Gagal menghapus sales: " + ((e1||e2).message), "error");
+    return;
+  }
+  const { error } = await supabaseClient
+    .from("sales_team")
+    .upsert({ id: person.id, name: person.name, gudang: person.gudang, supervisor: person.supervisor },
+             { onConflict: "id" });
+  if (error) notify("Gagal menyimpan data sales: " + error.message, "error");
+}
+
+async function persistWarehouse(warehouse) {
+  const { error } = await supabaseClient
+    .from("warehouses")
+    .upsert({ id: warehouse.id, name: warehouse.name, type: warehouse.type, kota: warehouse.kota },
+             { onConflict: "id" });
+  if (error) notify("Gagal menyimpan gudang: " + error.message, "error");
+}
+
+async function persistProducts(products) {
+  const rows = products.map(p => ({
+    id: p.id, name: p.name, brand: p.brand, category: p.category,
+    family_paket: p.familyPaket || "", material_code: p.materialCode || "",
+    cluster: p.cluster || "", price: p.price,
+  }));
+  const { error } = await supabaseClient
+    .from("products")
+    .upsert(rows, { onConflict: "id" });
+  if (error) notify("Gagal menyimpan katalog: " + error.message, "error");
+}
+
+async function initWarehouseStockRows(warehouseId, productIds) {
+  if (!productIds || !productIds.length) return;
+  const rows = productIds.map(pid => ({ warehouse_id: warehouseId, product_id: pid, qty: 0 }));
+  const { error } = await supabaseClient.from("warehouse_stock")
+    .upsert(rows, { onConflict: "warehouse_id,product_id", ignoreDuplicates: true });
+  if (error) notify("Gagal menginisialisasi stok gudang: " + error.message, "error");
+}
+
+async function initSalesStockRows(salesId, productIds) {
+  if (!productIds || !productIds.length) return;
+  const rows = productIds.map(pid => ({ sales_id: salesId, product_id: pid, qty: 0 }));
+  const { error } = await supabaseClient.from("sales_stock")
+    .upsert(rows, { onConflict: "sales_id,product_id", ignoreDuplicates: true });
+  if (error) notify("Gagal menginisialisasi stok sales: " + error.message, "error");
 }
 
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -334,55 +489,66 @@ function notify(msg, kind) {
   toastTimer = setTimeout(() => { el.style.display = "none"; }, 3200);
 }
 
-function pushTransaction(base) {
-  state.data.transactions.unshift({ id: uid("trx"), date: new Date().toISOString(), ...base });
-}
 
 // ---------------- mutations ----------------
-function stockIn(warehouseId, productId, qty, note) {
+async function stockIn(warehouseId, productId, qty, note) {
   if (!warehouseId || !productId || !qty || qty <= 0) return notify("Lengkapi gudang, produk dan jumlah", "error");
   state.data.stock[warehouseId][productId] = (state.data.stock[warehouseId][productId] || 0) + qty;
-  pushTransaction({ type: "masuk", to: warehouseId, productId, qty, note: note || "Barang masuk dari principal" });
-  persist(); render();
+  const trx = { id: uid("trx"), date: new Date().toISOString(), type: "masuk", to: warehouseId, productId, qty, note: note || "Barang masuk dari principal" };
+  state.data.transactions.unshift(trx);
+  render();
   notify("Barang masuk berhasil dicatat");
+  await persistWarehouseStock(warehouseId, productId, state.data.stock[warehouseId][productId]);
+  await persistTransaction(trx);
 }
 
-function transferWarehouse(fromId, toId, productId, qty) {
+async function transferWarehouse(fromId, toId, productId, qty) {
   if (!fromId || !toId || fromId === toId || !productId || !qty || qty <= 0) return notify("Lengkapi asal, tujuan, produk dan jumlah", "error");
   const avail = state.data.stock[fromId]?.[productId] || 0;
   if (qty > avail) return notify("Stok " + fromId + " tidak cukup (tersedia " + avail + ")", "error");
   state.data.stock[fromId][productId] -= qty;
   state.data.stock[toId][productId] = (state.data.stock[toId][productId] || 0) + qty;
-  pushTransaction({ type: "transfer", from: fromId, to: toId, productId, qty, note: "Perpindahan antar gudang" });
-  persist(); render();
+  const trx = { id: uid("trx"), date: new Date().toISOString(), type: "transfer", from: fromId, to: toId, productId, qty, note: "Perpindahan antar gudang" };
+  state.data.transactions.unshift(trx);
+  render();
   notify("Perpindahan stok berhasil");
+  await persistWarehouseStock(fromId, productId, state.data.stock[fromId][productId]);
+  await persistWarehouseStock(toId, productId, state.data.stock[toId][productId]);
+  await persistTransaction(trx);
 }
 
-function distribusiToSales(warehouseId, salesId, productId, qty) {
+async function distribusiToSales(warehouseId, salesId, productId, qty) {
   if (!warehouseId || !salesId || !productId || !qty || qty <= 0) return notify("Lengkapi gudang asal, sales, produk dan jumlah", "error");
   const avail = state.data.stock[warehouseId]?.[productId] || 0;
   if (qty > avail) return notify("Stok gudang tidak cukup (tersedia " + avail + ")", "error");
   state.data.stock[warehouseId][productId] -= qty;
   state.data.salesStock[salesId][productId] = (state.data.salesStock[salesId][productId] || 0) + qty;
-  pushTransaction({ type: "distribusi", from: warehouseId, to: salesId, productId, qty, note: "Distribusi ke tim sales" });
-  persist(); render();
+  const trx = { id: uid("trx"), date: new Date().toISOString(), type: "distribusi", from: warehouseId, to: salesId, productId, qty, note: "Distribusi ke tim sales" };
+  state.data.transactions.unshift(trx);
+  render();
   notify("Barang berhasil didistribusikan ke sales");
+  await persistWarehouseStock(warehouseId, productId, state.data.stock[warehouseId][productId]);
+  await persistSalesStock(salesId, productId, state.data.salesStock[salesId][productId]);
+  await persistTransaction(trx);
 }
 
-function addSalesPerson(id, name, gudangId, supervisor) {
+async function addSalesPerson(id, name, gudangId, supervisor) {
   id = (id || "").trim();
   name = (name || "").trim();
   if (!id || !name) return notify("ID Sales dan Nama Sales wajib diisi", "error");
   if (state.data.salesTeam.find(s => s.id.toLowerCase() === id.toLowerCase())) return notify("ID Sales \"" + id + "\" sudah dipakai", "error");
-  state.data.salesTeam.push({ id, name, gudang: gudangId || "", supervisor: (supervisor||"").trim() });
+  const person = { id, name, gudang: gudangId || "", supervisor: (supervisor||"").trim() };
+  state.data.salesTeam.push(person);
   state.data.salesStock[id] = {};
   state.data.products.forEach(p => state.data.salesStock[id][p.id] = 0);
   state.ui.salesSelectedStok = id;
-  persist(); render();
+  render();
   notify(name + " ditambahkan ke tim sales");
+  await persistSalesPerson(person);
+  await initSalesStockRows(id, state.data.products.map(p => p.id));
 }
 
-function deleteSalesPerson(id) {
+async function deleteSalesPerson(id) {
   const sales = state.data.salesTeam.find(s => s.id === id);
   if (!sales) return;
   const totalStock = Object.values(state.data.salesStock[id] || {}).reduce((a,b)=>a+b,0);
@@ -390,63 +556,86 @@ function deleteSalesPerson(id) {
   state.data.salesTeam = state.data.salesTeam.filter(s => s.id !== id);
   delete state.data.salesStock[id];
   if (state.ui.salesSelectedStok === id) state.ui.salesSelectedStok = "";
-  persist(); render();
+  render();
   notify(sales.name + " berhasil dihapus dari tim sales");
+  await persistSalesPerson(sales, "delete");
 }
 
-function addCabang(name, kota) {
+async function addCabang(name, kota) {
   if (!name || !name.trim()) return;
   const id = uid("cabang");
-  state.data.warehouses.push({ id, name: name.trim(), type: "cabang", kota: kota || "-" });
+  const warehouse = { id, name: name.trim(), type: "cabang", kota: kota || "-" };
+  state.data.warehouses.push(warehouse);
   state.data.stock[id] = {};
   state.data.products.forEach(p => state.data.stock[id][p.id] = 0);
   state.ui.cabangSelected = id;
-  persist(); render();
+  render();
   notify(name + " ditambahkan sebagai gudang cabang");
+  await persistWarehouse(warehouse);
+  await initWarehouseStockRows(id, state.data.products.map(p => p.id));
 }
 
-function reportIssue(sourceType, sourceId, productId, qty, reason) {
+async function reportIssue(sourceType, sourceId, productId, qty, reason) {
   if (!sourceId || !productId || !qty || qty <= 0) return notify("Lengkapi lokasi, produk dan jumlah", "error");
   const bucket = sourceType === "sales" ? state.data.salesStock : state.data.stock;
   const avail = bucket[sourceId]?.[productId] || 0;
   if (qty > avail) return notify("Stok di lokasi tersebut tidak cukup (tersedia " + avail + ")", "error");
   bucket[sourceId][productId] -= qty;
-  state.data.returItems.unshift({ id: uid("ret"), productId, qty, sourceType, sourceId, reason: reason || "-", status: "menunggu_penggantian", date: new Date().toISOString() });
-  pushTransaction({ type: "retur_keluar", from: sourceId, productId, qty, note: reason || "Barang bermasalah, menunggu penggantian principal" });
-  persist(); render();
+  const item = { id: uid("ret"), productId, qty, sourceType, sourceId, reason: reason || "-", status: "menunggu_penggantian", date: new Date().toISOString() };
+  state.data.returItems.unshift(item);
+  const trx = { id: uid("trx"), date: new Date().toISOString(), type: "retur_keluar", from: sourceId, productId, qty, note: reason || "Barang bermasalah, menunggu penggantian principal" };
+  state.data.transactions.unshift(trx);
+  render();
   notify("Barang bermasalah dicatat, menunggu penggantian principal", "warning");
+  if (sourceType === "sales") {
+    await persistSalesStock(sourceId, productId, bucket[sourceId][productId]);
+  } else {
+    await persistWarehouseStock(sourceId, productId, bucket[sourceId][productId]);
+  }
+  await persistReturItem(item);
+  await persistTransaction(trx);
 }
 
-function resolveReplacement(returId) {
+async function resolveReplacement(returId) {
   const item = state.data.returItems.find(r => r.id === returId);
   if (!item) return;
   item.status = "selesai_diganti";
   item.resolvedDate = new Date().toISOString();
   state.data.stock.pusat[item.productId] = (state.data.stock.pusat[item.productId] || 0) + item.qty;
-  pushTransaction({ type: "penggantian_masuk", to: "pusat", productId: item.productId, qty: item.qty, note: "Penggantian dari principal diterima" });
-  persist(); render();
+  const trx = { id: uid("trx"), date: new Date().toISOString(), type: "penggantian_masuk", to: "pusat", productId: item.productId, qty: item.qty, note: "Penggantian dari principal diterima" };
+  state.data.transactions.unshift(trx);
+  render();
   notify("Penggantian diterima, stok gudang pusat diperbarui");
+  await persistReturItem(item);
+  await persistWarehouseStock("pusat", item.productId, state.data.stock.pusat[item.productId]);
+  await persistTransaction(trx);
 }
 
-function applySalesUpload() {
+async function applySalesUpload() {
   const rows = state.ui.uploadRows;
   let applied = 0;
+  const persistPromises = [];
   rows.forEach(r => {
     if (r.status !== "ok") return;
     state.data.salesStock[r.salesId][r.productId] -= r.qty;
-    pushTransaction({ type: "penjualan", from: r.salesId, productId: r.productId, qty: r.qty, note: "Upload data penjualan" });
+    const trx = { id: uid("trx"), date: new Date().toISOString(), type: "penjualan", from: r.salesId, productId: r.productId, qty: r.qty, note: "Upload data penjualan" };
+    state.data.transactions.unshift(trx);
+    persistPromises.push(persistSalesStock(r.salesId, r.productId, state.data.salesStock[r.salesId][r.productId]));
+    persistPromises.push(persistTransaction(trx));
     applied++;
   });
   state.ui.uploadRows = [];
   state.ui.uploadFileName = "";
-  persist(); render();
+  render();
   notify(applied + " baris penjualan berhasil diproses, stok sales dikurangi");
+  await Promise.all(persistPromises);
 }
 
-function applyCatalogImport() {
+async function applyCatalogImport() {
   const rows = state.ui.catalogRows.filter(r => r.status === "new" || r.status === "update");
   if (!rows.length) return;
   let added = 0, updated = 0;
+  const newProductIds = [];
 
   rows.forEach(r => {
     const existing = state.data.products.find(p => p.id === r.id);
@@ -459,11 +648,11 @@ function applyCatalogImport() {
       state.data.products.push({ id: r.id, name: r.name, brand: r.brand, category: r.category, price: r.price, cluster: r.cluster, familyPaket: r.familyPaket, materialCode: r.materialCode });
       state.data.warehouses.forEach(w => { if (!(r.id in state.data.stock[w.id])) state.data.stock[w.id][r.id] = 0; });
       state.data.salesTeam.forEach(s => { if (!(r.id in state.data.salesStock[s.id])) state.data.salesStock[s.id][r.id] = 0; });
+      newProductIds.push(r.id);
       added++;
     }
   });
 
-  // nama Gudang Pusat mengikuti Sales Cluster dari data yang diupload
   const importedCluster = (rows.find(r => r.cluster) || {}).cluster;
   let renamed = false;
   if (importedCluster) {
@@ -474,8 +663,23 @@ function applyCatalogImport() {
 
   state.ui.catalogRows = [];
   state.ui.catalogFileName = "";
-  persist(); render();
+  render();
   notify(added + " produk baru ditambahkan, " + updated + " produk diperbarui" + (renamed ? ", nama Gudang Pusat diperbarui ke \"" + importedCluster + "\"" : ""));
+
+  const updatedProducts = rows.map(r => ({ id: r.id, name: r.name, brand: r.brand, category: r.category, price: r.price, cluster: r.cluster, familyPaket: r.familyPaket, materialCode: r.materialCode }));
+  await persistProducts(updatedProducts);
+  if (renamed) {
+    const pusat = state.data.warehouses.find(w => w.id === "pusat");
+    if (pusat) await persistWarehouse(pusat);
+  }
+  if (newProductIds.length) {
+    const warehouseIds = state.data.warehouses.map(w => w.id);
+    const salesIds = state.data.salesTeam.map(s => s.id);
+    await Promise.all([
+      ...warehouseIds.map(wid => initWarehouseStockRows(wid, newProductIds)),
+      ...salesIds.map(sid => initSalesStockRows(sid, newProductIds)),
+    ]);
+  }
 }
 
 // ---------------- Import / Export stok awal (Gudang Pusat & Cabang) ----------------
@@ -566,16 +770,21 @@ function handleStockImportFile(input) {
     reader.readAsArrayBuffer(file);
   }
 }
-function applyStockImport() {
+async function applyStockImport() {
   const rows = state.ui.stockImportRows.filter(r => r.status === "ok");
+  const persistPromises = [];
   rows.forEach(r => {
     state.data.stock[r.warehouseId][r.productId] = r.qty;
-    pushTransaction({ type: "stok_awal", to: r.warehouseId, productId: r.productId, qty: r.qty, note: "Update stok awal via import (" + r.warehouseName + ")" });
+    const trx = { id: uid("trx"), date: new Date().toISOString(), type: "stok_awal", to: r.warehouseId, productId: r.productId, qty: r.qty, note: "Update stok awal via import (" + r.warehouseName + ")" };
+    state.data.transactions.unshift(trx);
+    persistPromises.push(persistWarehouseStock(r.warehouseId, r.productId, r.qty));
+    persistPromises.push(persistTransaction(trx));
   });
   state.ui.stockImportRows = [];
   state.ui.stockImportFileName = "";
-  persist(); render();
+  render();
   notify(rows.length + " baris stok awal berhasil diterapkan");
+  await Promise.all(persistPromises);
 }
 
 // ---------------- Import massal daftar sales ----------------
@@ -634,9 +843,10 @@ function handleSalesImportFile(input) {
     reader.readAsArrayBuffer(file);
   }
 }
-function applySalesImport() {
+async function applySalesImport() {
   const rows = state.ui.salesImportRows.filter(r => r.status === "new" || r.status === "update");
   let added = 0, updated = 0;
+  const newSalesIds = [];
   rows.forEach(r => {
     const existing = state.data.salesTeam.find(s => s.id.toLowerCase() === r.id.toLowerCase());
     if (existing) {
@@ -646,14 +856,20 @@ function applySalesImport() {
       state.data.salesTeam.push({ id: r.id, name: r.name, gudang: r.gudang, supervisor: r.supervisor });
       state.data.salesStock[r.id] = {};
       state.data.products.forEach(p => state.data.salesStock[r.id][p.id] = 0);
+      newSalesIds.push(r.id);
       added++;
     }
   });
   state.ui.salesImportRows = [];
   state.ui.salesImportFileName = "";
   if (rows.length && !state.ui.salesSelectedStok) state.ui.salesSelectedStok = rows[0].id;
-  persist(); render();
+  render();
   notify(added + " sales baru ditambahkan, " + updated + " sales diperbarui");
+  await Promise.all(rows.map(r => persistSalesPerson({ id: r.id, name: r.name, gudang: r.gudang, supervisor: r.supervisor })));
+  if (newSalesIds.length) {
+    const productIds = state.data.products.map(p => p.id);
+    await Promise.all(newSalesIds.map(sid => initSalesStockRows(sid, productIds)));
+  }
 }
 
 // ---------------- autentikasi & manajemen pengguna ----------------
@@ -662,39 +878,73 @@ function isCabangAdmin() { return state.session && state.session.role === "admin
 function myCabangId() { return state.session ? state.session.cabangId : ""; }
 
 async function doLogin() {
-  const username = (document.getElementById("login-username")||{}).value || "";
+  const email    = (document.getElementById("login-username")||{}).value || "";
   const password = (document.getElementById("login-password")||{}).value || "";
-  const user = state.data.users.find(u => u.username.toLowerCase() === username.trim().toLowerCase() && u.password === password);
-  if (!user) { state.ui.loginError = "Username atau password salah"; render(); return; }
-  state.session = user;
+
+  const { error } = await supabaseClient.auth.signInWithPassword({ email: email.trim(), password });
+  if (error) {
+    state.ui.loginError = "Email atau password salah";
+    render();
+    return;
+  }
+
+  const { data: { user } } = await supabaseClient.auth.getUser();
+  const { data: profile } = await supabaseClient
+    .from("users").select("*").eq("id", user.id).single();
+
+  state.session = {
+    id: profile.id, username: profile.username, name: profile.name,
+    role: profile.role, cabangId: profile.cabang_id,
+  };
   state.ui.loginError = "";
   if (isCabangAdmin() && state.tab === "pusat") state.tab = "dashboard";
-  try { await window.storage.set(SESSION_KEY, user.id, false); } catch (e) {}
   render();
 }
 async function doLogout() {
+  await supabaseClient.auth.signOut();
   state.session = null;
-  try { await window.storage.set(SESSION_KEY, "", false); } catch (e) {}
   render();
 }
-function addUser(username, password, name, role, cabangId) {
+async function addUser(username, password, name, role, cabangId) {
   username = (username||"").trim(); password = (password||"").trim(); name = (name||"").trim();
-  if (!username || !password || !name) return notify("Username, password, dan nama wajib diisi", "error");
-  if (state.data.users.find(u => u.username.toLowerCase() === username.toLowerCase())) return notify("Username \"" + username + "\" sudah dipakai", "error");
+  if (!username || !password || !name) return notify("Email, password, dan nama wajib diisi", "error");
   if (role === "admin_cabang" && !cabangId) return notify("Pilih gudang cabang untuk akun ini", "error");
-  state.data.users.push({ id: uid("user"), username, password, name, role, cabangId: role==="admin_cabang" ? cabangId : "" });
-  persist(); render();
+
+  const { data: existing } = await supabaseClient.from("users")
+    .select("id").eq("username", username).maybeSingle();
+  if (existing) return notify('Email "' + username + '" sudah terdaftar', "error");
+
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/manage-user`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + session.access_token },
+    body: JSON.stringify({ action: "create", email: username, password, name, role, cabangId: role === "admin_cabang" ? cabangId : "" }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    return notify("Gagal membuat akun: " + (body.message || res.statusText), "error");
+  }
+  await loadData();
+  render();
   notify("Akun " + name + " berhasil ditambahkan");
 }
-function deleteUser(userId) {
+async function deleteUser(userId) {
   const u = state.data.users.find(x => x.id === userId);
   if (!u) return;
   const pusatAdmins = state.data.users.filter(x => x.role === "admin_pusat");
   if (u.role === "admin_pusat" && pusatAdmins.length <= 1) return notify("Tidak bisa menghapus satu-satunya akun Admin Pusat", "error");
   if (state.session && state.session.id === userId) return notify("Tidak bisa menghapus akun yang sedang login", "error");
   if (!confirm('Hapus akun "' + u.name + '" (' + u.username + ')?')) return;
-  state.data.users = state.data.users.filter(x => x.id !== userId);
-  persist(); render();
+
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/manage-user`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + session.access_token },
+    body: JSON.stringify({ action: "delete", userId }),
+  });
+  if (!res.ok) return notify("Gagal menghapus akun", "error");
+  await loadData();
+  render();
   notify("Akun " + u.name + " dihapus");
 }
 
@@ -1398,11 +1648,11 @@ function renderLogin() {
       '<p class="login-sub">Masuk untuk mengakses dashboard stok kartu &amp; voucher</p>' +
       (state.ui.loginError ? '<div class="login-error">' + esc(state.ui.loginError) + '</div>' : '') +
       '<div class="stack" style="gap:12px">' +
-        '<label class="field"><span>Username</span><input class="input" id="login-username" placeholder="username" onkeydown="if(event.key===\'Enter\')doLogin()"></label>' +
+        '<label class="field"><span>Email</span><input class="input" id="login-username" placeholder="email@domain.com" onkeydown="if(event.key===\'Enter\')doLogin()"></label>' +
         '<label class="field"><span>Password</span><input class="input" type="password" id="login-password" placeholder="password" onkeydown="if(event.key===\'Enter\')doLogin()"></label>' +
         '<button class="btn btn-primary" style="justify-content:center" onclick="doLogin()">Masuk</button>' +
       '</div>' +
-      '<p class="login-hint">Demo: <code class="inline">admin.pusat</code> / <code class="inline">admin123</code> (akses penuh) &middot; <code class="inline">admin.cabang</code> / <code class="inline">admin123</code> (akses cabang)</p>' +
+      '<p class="login-hint">Masuk menggunakan email dan password yang telah terdaftar di Supabase Auth.</p>' +
     '</div>' +
   '</div>';
 }
@@ -1412,7 +1662,7 @@ function renderKelolaPengguna() {
   return '<div class="stack">' +
     '<div class="section"><div class="section-head"><h3>Tambah akun pengguna</h3></div>' +
       '<div class="row" style="align-items:flex-end">' +
-        '<label class="field"><span>Username</span><input class="input" id="user-username" placeholder="mis. admin.cabang2"></label>' +
+        '<label class="field"><span>Email</span><input class="input" id="user-username" placeholder="email@domain.com"></label>' +
         '<label class="field"><span>Password</span><input class="input" id="user-password" placeholder="password"></label>' +
         '<label class="field"><span>Nama</span><input class="input" id="user-name" placeholder="Nama lengkap"></label>' +
         '<label class="field"><span>Role</span><select class="input" id="user-role" onchange="onUserRoleChange(this.value)"><option value="admin_pusat">Admin Pusat</option><option value="admin_cabang" selected>Admin Cabang</option></select></label>' +
@@ -1556,8 +1806,8 @@ function render() {
 
 (async function init() {
   document.getElementById("root").innerHTML = '<div style="padding:60px;text-align:center;color:#94a3b8">Memuat data gudang...</div>';
-  await loadData();
   await restoreSession();
+  await loadData();
   render();
 })();
 </script>
