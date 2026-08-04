@@ -293,9 +293,6 @@ const state = {
 };
 
 async function loadData() {
-  document.getElementById("root").innerHTML =
-    '<div style="padding:60px;text-align:center;color:#94a3b8">Memuat data gudang...</div>';
-
   const [
     { data: products,        error: e1 },
     { data: warehouses,      error: e2 },
@@ -316,10 +313,11 @@ async function loadData() {
     supabaseClient.from("users").select("*"),
   ]);
 
-  if (e1||e2||e3||e4||e5||e6||e7||e8) {
-    document.getElementById("root").innerHTML =
-      '<div style="padding:60px;text-align:center;color:#e11d48">Gagal memuat data dari server. Periksa koneksi internet Anda.</div>';
-    return;
+  const firstError = e1||e2||e3||e4||e5||e6||e7||e8;
+  if (firstError) {
+    console.error("loadData error:", {e1,e2,e3,e4,e5,e6,e7,e8});
+    notify("Gagal memuat data: " + firstError.message + " (kode: " + firstError.code + ")", "error");
+    return false;
   }
 
   // Map snake_case columns → camelCase JS fields
@@ -371,19 +369,18 @@ async function loadData() {
     returItems: mappedReturItems,
     users: mappedUsers,
   };
+  return true;
 }
 
 async function restoreSession() {
-  const { data: { session } } = await supabaseClient.auth.getSession();
-  if (!session) return;
-
-  const { data: profile } = await supabaseClient
-    .from("users").select("*").eq("id", session.user.id).single();
-  if (!profile) return;
-
+  // === LOGIN BYPASS (sementara) ===
+  // Nonaktifkan autentikasi — semua user langsung masuk sebagai Admin Pusat
   state.session = {
-    id: profile.id, username: profile.username, name: profile.name,
-    role: profile.role, cabangId: profile.cabang_id,
+    id: "bypass-user",
+    username: "admin@bypass.local",
+    name: "Admin (Bypass)",
+    role: "admin_pusat",
+    cabangId: "",
   };
 }
 
@@ -902,9 +899,8 @@ async function doLogin() {
   render();
 }
 async function doLogout() {
-  await supabaseClient.auth.signOut();
-  state.session = null;
-  render();
+  // === LOGIN BYPASS (sementara) — logout hanya reload halaman ===
+  location.reload();
 }
 async function addUser(username, password, name, role, cabangId) {
   username = (username||"").trim(); password = (password||"").trim(); name = (name||"").trim();
