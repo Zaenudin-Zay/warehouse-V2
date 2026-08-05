@@ -87,6 +87,7 @@
   .badge-stok { background: #e2e8f0; color: #334155; }
   .badge-ok { background: #d1fae5; color: #065f46; }
   .badge-err { background: #ffe4e6; color: #9f1239; }
+  .badge-hq { background: #ede9fe; color: #5b21b6; }
 
   /* table */
   table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -297,6 +298,7 @@ function buildSeed() {
   ];
 
   const users = [
+    { id: uid("user"), username: "HQ.001", password: "hq123", name: "Headquarter", role: "hq", cabangId: "" },
     { id: uid("user"), username: "admin.pusat", password: "admin123", name: "Admin Pusat", role: "admin_pusat", cabangId: "" },
     { id: uid("user"), username: "admin.cabang", password: "admin123", name: "Admin Cabang", role: "admin_cabang", cabangId: branchWarehouse.id },
   ];
@@ -327,6 +329,10 @@ async function loadData() {
       if (!state.data.users || !state.data.users.length) {
         const seed = buildSeed();
         state.data.users = seed.users;
+        await persist();
+      }
+      if (!state.data.users.some(u => u.role === "hq")) {
+        state.data.users.unshift({ id: uid("user"), username: "HQ.001", password: "hq123", name: "Headquarter", role: "hq", cabangId: "" });
         await persist();
       }
       return;
@@ -686,8 +692,10 @@ function applySalesImport() {
 }
 
 // ---------------- autentikasi & manajemen pengguna ----------------
+function isHQ() { return state.session && state.session.role === "hq"; }
 function isPusatAdmin() { return state.session && state.session.role === "admin_pusat"; }
 function isCabangAdmin() { return state.session && state.session.role === "admin_cabang"; }
+function isPusatOrHQ() { return isPusatAdmin() || isHQ(); }
 function myCabangId() { return state.session ? state.session.cabangId : ""; }
 
 async function doLogin() {
@@ -709,6 +717,7 @@ async function doLogout() {
 function addUser(username, password, name, role, cabangId) {
   username = (username||"").trim(); password = (password||"").trim(); name = (name||"").trim();
   if (!username || !password || !name) return notify("Username, password, dan nama wajib diisi", "error");
+  if (role === "hq" && !isHQ()) return notify("Hanya akun Head Quarter yang bisa menambahkan akun Head Quarter", "error");
   if (state.data.users.find(u => u.username.toLowerCase() === username.toLowerCase())) return notify("Username \"" + username + "\" sudah dipakai", "error");
   if (role === "admin_cabang" && !cabangId) return notify("Pilih gudang cabang untuk akun ini", "error");
   state.data.users.push({ id: uid("user"), username, password, name, role, cabangId: role==="admin_cabang" ? cabangId : "" });
@@ -718,6 +727,9 @@ function addUser(username, password, name, role, cabangId) {
 function deleteUser(userId) {
   const u = state.data.users.find(x => x.id === userId);
   if (!u) return;
+  if (u.role === "hq" && !isHQ()) return notify("Tidak punya izin menghapus akun Head Quarter", "error");
+  const hqAdmins = state.data.users.filter(x => x.role === "hq");
+  if (u.role === "hq" && hqAdmins.length <= 1) return notify("Tidak bisa menghapus satu-satunya akun Head Quarter", "error");
   const pusatAdmins = state.data.users.filter(x => x.role === "admin_pusat");
   if (u.role === "admin_pusat" && pusatAdmins.length <= 1) return notify("Tidak bisa menghapus satu-satunya akun Admin Pusat", "error");
   if (state.session && state.session.id === userId) return notify("Tidak bisa menghapus akun yang sedang login", "error");
@@ -992,7 +1004,7 @@ function renderGudangCabang() {
   return '<div class="stack">' +
     '<div class="row">' +
       '<select class="input" id="cabang-select" onchange="onCabangSelect(this.value)"' + (isCabangAdmin()?" disabled":"") + '>' + cabangList.map(c=>'<option value="'+c.id+'"'+(c.id===selected?" selected":"")+'>'+esc(c.name)+'</option>').join("") + '</select>' +
-      (isPusatAdmin() ? '<button class="btn btn-ghost" onclick="toggleAddCabang()">+ Tambah gudang cabang</button>' : '') +
+      (isPusatOrHQ() ? '<button class="btn btn-ghost" onclick="toggleAddCabang()">+ Tambah gudang cabang</button>' : '') +
     '</div>' +
     '<div id="add-cabang-box" style="display:none">' +
       '<div class="section"><div class="section-head"><h3>Gudang cabang baru</h3></div>' +
@@ -1450,19 +1462,25 @@ function renderKelolaPengguna() {
         '<label class="field"><span>Username</span><input class="input" id="user-username" placeholder="mis. admin.cabang2"></label>' +
         '<label class="field"><span>Password</span><input class="input" id="user-password" placeholder="password"></label>' +
         '<label class="field"><span>Nama</span><input class="input" id="user-name" placeholder="Nama lengkap"></label>' +
-        '<label class="field"><span>Role</span><select class="input" id="user-role" onchange="onUserRoleChange(this.value)"><option value="admin_pusat">Admin Pusat</option><option value="admin_cabang" selected>Admin Cabang</option></select></label>' +
+        '<label class="field"><span>Role</span><select class="input" id="user-role" onchange="onUserRoleChange(this.value)">' +
+          (isHQ() ? '<option value="hq">Head Quarter</option>' : '') +
+          '<option value="admin_pusat">Admin Pusat</option><option value="admin_cabang" selected>Admin Cabang</option></select></label>' +
         '<label class="field" id="user-cabang-field"><span>Gudang Cabang</span><select class="input" id="user-cabang">' + cabangList.map(w=>'<option value="'+w.id+'">'+esc(w.name)+'</option>').join("") + '</select></label>' +
         '<button class="btn btn-primary" onclick="onAddUser()">Simpan</button>' +
       '</div>' +
     '</div>' +
-    '<div class="section"><div class="section-head"><h3>Daftar akun (' + state.data.users.length + ')</h3></div>' +
+    (function(){
+      const visibleUsers = isHQ() ? state.data.users : state.data.users.filter(u=>u.role!=="hq");
+      return '<div class="section"><div class="section-head"><h3>Daftar akun (' + visibleUsers.length + ')</h3></div>' +
       '<table class="tbl"><thead><tr><th>Username</th><th>Nama</th><th>Role</th><th>Gudang</th><th></th></tr></thead><tbody>' +
-      state.data.users.map(u => {
-        const gudangName = u.cabangId ? (state.data.warehouses.find(w=>w.id===u.cabangId)||{}).name || "-" : "Semua gudang";
-        return '<tr><td class="muted">'+esc(u.username)+'</td><td>'+esc(u.name)+'</td><td>' + (u.role==="admin_pusat" ? '<span class="badge badge-transfer">Admin Pusat</span>' : '<span class="badge badge-distribusi">Admin Cabang</span>') + '</td><td class="muted">'+esc(gudangName)+'</td><td><button class="btn btn-ghost" style="color:#be123c;border-color:#fecdd3;padding:4px 10px" onclick="deleteUser(\''+u.id+'\')">Hapus</button></td></tr>';
+      visibleUsers.map(u => {
+        const gudangName = u.role==="hq" ? "Nasional" : u.cabangId ? (state.data.warehouses.find(w=>w.id===u.cabangId)||{}).name || "-" : "Semua gudang";
+        const roleBadge = u.role==="hq" ? '<span class="badge badge-hq">Head Quarter</span>' : u.role==="admin_pusat" ? '<span class="badge badge-transfer">Admin Pusat</span>' : '<span class="badge badge-distribusi">Admin Cabang</span>';
+        return '<tr><td class="muted">'+esc(u.username)+'</td><td>'+esc(u.name)+'</td><td>' + roleBadge + '</td><td class="muted">'+esc(gudangName)+'</td><td><button class="btn btn-ghost" style="color:#be123c;border-color:#fecdd3;padding:4px 10px" onclick="deleteUser(\''+u.id+'\')">Hapus</button></td></tr>';
       }).join("") +
       '</tbody></table>' +
-    '</div>' +
+    '</div>';
+    })() +
   '</div>';
 }
 function onUserRoleChange(role) {
@@ -1513,8 +1531,8 @@ const TABS = [
 ];
 function visibleTabs() {
   return TABS.filter(t => {
-    if (t.id === "pusat") return isPusatAdmin();
-    if (t.id === "users") return isPusatAdmin();
+    if (t.id === "pusat") return isPusatOrHQ();
+    if (t.id === "users") return isPusatOrHQ();
     return true;
   });
 }
@@ -1552,7 +1570,7 @@ function renderSidebar() {
 }
 function renderTopbar() {
   const pending = state.data.returItems.filter(r=>r.status==="menunggu_penggantian").length;
-  const roleLabel = isPusatAdmin() ? "Admin Pusat" : "Admin Cabang" + (myCabangId() ? " \u2013 " + esc((state.data.warehouses.find(w=>w.id===myCabangId())||{}).name||"") : "");
+  const roleLabel = isHQ() ? "Head Quarter" : isPusatAdmin() ? "Admin Pusat" : "Admin Cabang" + (myCabangId() ? " \u2013 " + esc((state.data.warehouses.find(w=>w.id===myCabangId())||{}).name||"") : "");
   return '<div class="topbar"><div class="topbar-date">' + new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"}) + '</div>' +
     '<div class="row" style="gap:14px">' +
     (pending>0 ? '<span class="pill-warning">&#9888; ' + pending + ' item menunggu penggantian principal</span>' : '') +
@@ -1573,7 +1591,7 @@ function renderTabContent() {
     case "upload": return renderUploadPenjualan();
     case "status": return renderStatusBarang();
     case "riwayat": return renderRiwayat();
-    case "users": return isPusatAdmin() ? renderKelolaPengguna() : renderDashboard();
+    case "users": return isPusatOrHQ() ? renderKelolaPengguna() : renderDashboard();
     default: return "";
   }
 }
@@ -1589,7 +1607,7 @@ function render() {
   }
   if (!state.session) { root.innerHTML = renderLogin(); return; }
   if (isCabangAdmin() && state.tab === "pusat") state.tab = "dashboard";
-  if (state.tab === "users" && !isPusatAdmin()) state.tab = "dashboard";
+  if (state.tab === "users" && !isPusatOrHQ()) state.tab = "dashboard";
   root.innerHTML = renderSidebar() +
     '<div class="main">' + renderTopbar() + '<div class="content">' + renderTabContent() + '</div></div>';
   if (state.tab === "cabang") renderAvailPusat();
