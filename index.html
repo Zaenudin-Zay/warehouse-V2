@@ -1152,21 +1152,6 @@ async function applyCatalogImport() {
   }
 }
 
-  // nama Gudang Pusat mengikuti Sales Cluster dari data yang diupload
-  const importedCluster = (rows.find(r => r.cluster) || {}).cluster;
-  let renamed = false;
-  if (importedCluster) {
-    const pusat = state.data.warehouses.find(w => w.id === "pusat");
-    const newName = "Gudang Pusat - " + importedCluster;
-    if (pusat && pusat.name !== newName) { pusat.name = newName; pusat.kota = importedCluster; renamed = true; }
-  }
-
-  state.ui.catalogRows = [];
-  state.ui.catalogFileName = "";
-  persist(); render();
-  notify(added + " produk baru ditambahkan, " + updated + " produk diperbarui" + (renamed ? ", nama Gudang Pusat diperbarui ke \"" + importedCluster + "\"" : ""));
-}
-
 // ---------------- Import / Export stok awal (Gudang Pusat & Cabang) ----------------
 function csvCell(v) {
   const s = (v===undefined||v===null) ? "" : v.toString();
