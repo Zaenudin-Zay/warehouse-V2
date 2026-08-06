@@ -399,6 +399,121 @@ function categoryLabel(cat) {
 function uniqueBrands() { return Array.from(new Set(state.data.products.map(p => p.brand))); }
 
 // ---------------- seed data ----------------
+
+/**
+ * Initialize seed data into empty database
+ * INSERTION ORDER: Critical for foreign key dependencies
+ * 1. Products (no dependencies)
+ * 2. Warehouses (no dependencies)
+ * 3. Sales team (depends on warehouses via gudang FK)
+ * 4. Users (depends on warehouses via cabang_id FK)
+ * 5. Warehouse stock (depends on products & warehouses)
+ * @throws {Error} Any database operation failure
+ */
+async function initializeSeedData() {
+  try {
+    // 1. INSERT products from CATALOG_SEED with column mapping
+    console.log('Seeding products...');
+    const productsToInsert = CATALOG_SEED.map(p => ({
+      id: p.id,
+      name: p.name,
+      category: p.category,
+      brand: p.brand,
+      material_code: p.materialCode,
+      family_paket: p.familyPaket,
+      cluster: p.cluster,
+      price: p.price
+    }));
+    
+    const { error: prodError } = await sb.from('products').insert(productsToInsert);
+    if (prodError) throw new Error('Failed to insert products: ' + prodError.message);
+
+    // 2. INSERT default warehouses (HQ + branches)
+    console.log('Seeding warehouses...');
+    const primaryCluster = CATALOG_SEED.find(p => p.cluster)?.cluster || "CJ-Yogyakarta Magelang";
+    const warehouses = [
+      { id: "pusat", name: "Gudang Pusat - " + primaryCluster, type: "pusat", kota: primaryCluster },
+      { id: "cabang-1", name: "BO Magelang", type: "cabang", kota: "Magelang" },
+      { id: "cabang-2", name: "BO Semarang", type: "cabang", kota: "Semarang" },
+      { id: "cabang-3", name: "BO Solo", type: "cabang", kota: "Solo" }
+    ];
+    
+    const { error: whError } = await sb.from('warehouses').insert(warehouses);
+    if (whError) throw new Error('Failed to insert warehouses: ' + whError.message);
+
+    // 3. INSERT sample sales persons
+    console.log('Seeding sales team...');
+    const salesTeam = [
+      { id: "SF-001", name: "Budi Santoso", gudang: "pusat", supervisor: "Supervisor A" },
+      { id: "SF-002", name: "Ani Wijaya", gudang: "cabang-1", supervisor: "Supervisor B" },
+      { id: "SF-003", name: "Citra Dewi", gudang: "cabang-2", supervisor: "Supervisor C" }
+    ];
+    
+    const { error: salesError } = await sb.from('sales_team').insert(salesTeam);
+    if (salesError) throw new Error('Failed to insert sales team: ' + salesError.message);
+
+    // 4. INSERT admin user (username: admin, password: admin)
+    console.log('Seeding users...');
+    const users = [
+      { id: uid("user"), username: "admin", password: "admin", name: "Administrator", role: "hq", cabang_id: null }
+    ];
+    
+    const { error: userError } = await sb.from('users').insert(users);
+    if (userError) throw new Error('Failed to insert users: ' + userError.message);
+
+    // 5. INSERT initial HQ stock (first 10 products from CATALOG_SEED, qty=100 each)
+    console.log('Seeding warehouse stock...');
+    const initialStock = CATALOG_SEED.slice(0, 10).map(p => ({
+      warehouse_id: "pusat",
+      product_id: p.id,
+      quantity: 100
+    }));
+    
+    const { error: stockError } = await sb.from('warehouse_stock').insert(initialStock);
+    if (stockError) throw new Error('Failed to insert warehouse stock: ' + stockError.message);
+
+    // Initialize empty stock for all other products and warehouses
+    const allStockInserts = [];
+    warehouses.forEach(wh => {
+      CATALOG_SEED.forEach(p => {
+        // Skip first 10 products for pusat warehouse (already inserted above)
+        if (wh.id === "pusat" && CATALOG_SEED.indexOf(p) < 10) return;
+        
+        allStockInserts.push({
+          warehouse_id: wh.id,
+          product_id: p.id,
+          quantity: 0
+        });
+      });
+    });
+    
+    if (allStockInserts.length > 0) {
+      const { error: emptyStockError } = await sb.from('warehouse_stock').insert(allStockInserts);
+      if (emptyStockError) throw new Error('Failed to insert empty warehouse stock: ' + emptyStockError.message);
+    }
+
+    // Initialize empty sales stock for all sales persons and all products
+    const salesStockInserts = [];
+    salesTeam.forEach(sales => {
+      CATALOG_SEED.forEach(p => {
+        salesStockInserts.push({
+          sales_id: sales.id,
+          product_id: p.id,
+          quantity: 0
+        });
+      });
+    });
+    
+    const { error: salesStockError } = await sb.from('sales_stock').insert(salesStockInserts);
+    if (salesStockError) throw new Error('Failed to insert sales stock: ' + salesStockError.message);
+
+    console.log('Seed data initialization complete!');
+  } catch (error) {
+    console.error('Seed data initialization failed:', error);
+    throw error;
+  }
+}
+
 function buildProducts() {
   return CATALOG_SEED.map(p => ({
     id: p.id, name: p.name, brand: p.brand, category: p.category,
