@@ -1383,13 +1383,6 @@ async function applySalesImport() {
     notify("Gagal import sales: " + (e.message || e), "error");
   }
 }
-  });
-  state.ui.salesImportRows = [];
-  state.ui.salesImportFileName = "";
-  if (rows.length && !state.ui.salesSelectedStok) state.ui.salesSelectedStok = rows[0].id;
-  persist(); render();
-  notify(added + " sales baru ditambahkan, " + updated + " sales diperbarui");
-}
 
 // ---------------- autentikasi & manajemen pengguna ----------------
 function isHQ() { return state.session && state.session.role === "hq"; }
