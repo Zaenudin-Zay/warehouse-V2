@@ -219,7 +219,7 @@ async function loadWarehouseStock() {
     // Initialize warehouse object if not exists
     if (!stock[row.warehouse_id]) stock[row.warehouse_id] = {};
     // Map product_id to quantity within warehouse
-    stock[row.warehouse_id][row.product_id] = row.quantity;
+    stock[row.warehouse_id][row.product_id] = row.qty;
   });
   return stock;
 }
@@ -240,7 +240,7 @@ async function loadSalesStock() {
     // Initialize sales team object if not exists
     if (!salesStock[row.sales_id]) salesStock[row.sales_id] = {};
     // Map product_id to quantity within sales team
-    salesStock[row.sales_id][row.product_id] = row.quantity;
+    salesStock[row.sales_id][row.product_id] = row.qty;
   });
   return salesStock;
 }
@@ -466,7 +466,7 @@ async function initializeSeedData() {
     const initialStock = CATALOG_SEED.slice(0, 10).map(p => ({
       warehouse_id: "pusat",
       product_id: p.id,
-      quantity: 100
+      qty: 100
     }));
     
     const { error: stockError } = await sb.from('warehouse_stock').insert(initialStock);
@@ -482,7 +482,7 @@ async function initializeSeedData() {
         allStockInserts.push({
           warehouse_id: wh.id,
           product_id: p.id,
-          quantity: 0
+          qty: 0
         });
       });
     });
@@ -499,7 +499,7 @@ async function initializeSeedData() {
         salesStockInserts.push({
           sales_id: sales.id,
           product_id: p.id,
-          quantity: 0
+          qty: 0
         });
       });
     });
