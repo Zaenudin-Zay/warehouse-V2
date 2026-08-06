@@ -143,23 +143,168 @@
 <div id="toast"></div>
 
 <script>
-// ---------------- Supabase config ----------------
+// ============================================================================
+// NORMALIZED DATABASE VERSION
+// Updated to use normalized tables instead of JSON blob
+// ============================================================================
+
 const SUPABASE_URL = "https://klczlrjucqmkjrjkbiif.supabase.co";
 const SUPABASE_KEY = "sb_publishable_unu8hSPpP5UeKMmRrGjsEA_CCELGfRy";
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-async function dbGet(key) {
-  const { data, error } = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+// ============================================================================
+// DATA LOADING FUNCTIONS (FROM NORMALIZED TABLES)
+// ============================================================================
+
+/**
+ * Load all products from database
+ * Column mappings: material_code→materialCode, family_paket→familyPaket
+ * @throws {Error} Database error on query failure
+ */
+async function loadProducts() {
+  const { data, error } = await sb.from('products').select('*');
   if (error) throw error;
-  return data ? data.value : null;
-}
-async function dbSet(key, value) {
-  const { error } = await sb.from("app_state").upsert({ key, value, updated_at: new Date().toISOString() });
-  if (error) throw error;
+  return data.map(p => ({
+    id: p.id,
+    name: p.name,
+    category: p.category,
+    brand: p.brand,
+    materialCode: p.material_code,
+    familyPaket: p.family_paket,
+    cluster: p.cluster,
+    price: p.price
+  }));
 }
 
+/**
+ * Load all warehouses from database
+ * No column transformations needed (all columns already in camelCase)
+ * @throws {Error} Database error on query failure
+ */
+async function loadWarehouses() {
+  const { data, error } = await sb.from('warehouses').select('*');
+  if (error) throw error;
+  return data.map(w => ({
+    id: w.id,
+    name: w.name,
+    type: w.type,
+    kota: w.kota
+  }));
+}
+
+async function loadSalesTeam() {
+  const { data, error } = await sb.from('sales_team').select('*');
+  if (error) throw error;
+  return data.map(s => ({
+    id: s.id,
+    name: s.name,
+    gudang: s.gudang,
+    supervisor: s.supervisor
+  }));
+}
+
+/**
+ * Load warehouse stock from database
+ * Transform flat rows into nested dictionary: { warehouse_id: { product_id: quantity } }
+ * This transformation allows O(1) lookup for stock quantities by warehouse and product.
+ * @throws {Error} Database error on query failure
+ */
+async function loadWarehouseStock() {
+  const { data, error } = await sb.from('warehouse_stock').select('*');
+  if (error) throw error;
+
+  // Build nested dictionary for efficient lookups
+  const stock = {};
+  data.forEach(row => {
+    // Initialize warehouse object if not exists
+    if (!stock[row.warehouse_id]) stock[row.warehouse_id] = {};
+    // Map product_id to quantity within warehouse
+    stock[row.warehouse_id][row.product_id] = row.quantity;
+  });
+  return stock;
+}
+
+/**
+ * Load sales stock from database
+ * Transform flat rows into nested dictionary: { sales_id: { product_id: quantity } }
+ * This transformation allows O(1) lookup for stock quantities by sales team and product.
+ * @throws {Error} Database error on query failure
+ */
+async function loadSalesStock() {
+  const { data, error } = await sb.from('sales_stock').select('*');
+  if (error) throw error;
+
+  // Build nested dictionary for efficient lookups
+  const salesStock = {};
+  data.forEach(row => {
+    // Initialize sales team object if not exists
+    if (!salesStock[row.sales_id]) salesStock[row.sales_id] = {};
+    // Map product_id to quantity within sales team
+    salesStock[row.sales_id][row.product_id] = row.quantity;
+  });
+  return salesStock;
+}
+
+async function loadTransactions() {
+  const { data, error } = await sb
+    .from('transactions')
+    .select('*')
+    .order('date', { ascending: false });
+  if (error) throw error;
+
+  return data.map(t => ({
+    id: t.id,
+    type: t.type,
+    date: t.date,
+    from: t.from_id,
+    to: t.to_id,
+    productId: t.product_id,
+    qty: t.qty,
+    note: t.note
+  }));
+}
+
+async function loadReturItems() {
+  const { data, error } = await sb.from('retur_items').select('*');
+  if (error) throw error;
+
+  return data.map(r => ({
+    id: r.id,
+    productId: r.product_id,
+    qty: r.qty,
+    sourceType: r.source_type,
+    sourceId: r.source_id,
+    reason: r.reason,
+    status: r.status,
+    date: r.date,
+    resolvedDate: r.resolved_date
+  }));
+}
+
+async function loadUsers() {
+  const { data, error } = await sb.from('users').select('*');
+  if (error) throw error;
+
+  return data.map(u => ({
+    id: u.id,
+    username: u.username,
+    password: u.password,
+    name: u.name,
+    role: u.role,
+    cabangId: u.cabang_id
+  }));
+}
+
+// ============================================================================
+// LEGACY PATTERN REMOVED
+// The following legacy storage pattern has been removed for normalized database migration:
+// - STORAGE_KEY constant (previously "gudang-sim-data-v5")
+// - dbGet() function (localStorage retrieval)
+// - dbSet() function (localStorage persistence)
+// All data operations now use direct Supabase table operations.
+// ============================================================================
+
 // ---------------- utilities ----------------
-const STORAGE_KEY = "gudang-sim-data-v5";
 
 function uid(prefix) { return prefix + "-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8); }
 function fmtDate(d) { return new Date(d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" }); }
@@ -321,26 +466,75 @@ const state = {
     loginError: "", userForm: false },
 };
 
+// ============================================================================
+// MAIN DATA MANAGEMENT
+// ============================================================================
+
 async function loadData() {
   try {
-    const value = await dbGet(STORAGE_KEY);
-    if (value) {
-      state.data = value;
-      if (!state.data.users || !state.data.users.length) {
-        const seed = buildSeed();
-        state.data.users = seed.users;
-        await persist();
+    // Load all data in parallel from normalized tables
+    const [products, warehouses, salesTeam, warehouseStock, salesStock, transactions, returItems, users] =
+      await Promise.all([
+        loadProducts(),
+        loadWarehouses(),
+        loadSalesTeam(),
+        loadWarehouseStock(),
+        loadSalesStock(),
+        loadTransactions(),
+        loadReturItems(),
+        loadUsers()
+      ]);
+
+    // Populate state with loaded data
+    state.data = {
+      products,
+      warehouses,
+      salesTeam,
+      stock: warehouseStock,
+      salesStock,
+      transactions,
+      returItems,
+      users
+    };
+
+    // Initialize seed data if database is empty
+    if (products.length === 0 && warehouses.length === 0) {
+      if (typeof initializeSeedData === 'function') {
+        await initializeSeedData();
+        await loadData(); // Reload after seeding
+        notify("Database initialized with seed data", "success");
+        return;
       }
-      if (!state.data.users.some(u => u.role === "hq")) {
-        state.data.users.unshift({ id: uid("user"), username: "HQ.001", password: "hq123", name: "Headquarter", role: "hq", cabangId: "" });
-        await persist();
-      }
-      return;
     }
-  } catch (e) { console.error("gagal memuat dari Supabase", e); state.loadError = (e && e.message) ? e.message : String(e); }
-  const seed = buildSeed();
-  state.data = seed;
-  try { await dbSet(STORAGE_KEY, seed); } catch (e) { console.error("gagal menyimpan awal ke Supabase", e); state.loadError = (e && e.message) ? e.message : String(e); }
+
+    // Handle missing users (legacy compatibility)
+    if (!state.data.users || !state.data.users.length) {
+      // Initialize default HQ user if no users exist
+      const seed = buildSeed();
+      state.data.users = seed.users;
+      // Save users to database
+      for (const user of seed.users) {
+        await sb.from('users').insert({
+          id: user.id,
+          username: user.username,
+          password: user.password,
+          name: user.name,
+          role: user.role,
+          cabang_id: user.cabangId
+        });
+      }
+    }
+  } catch (e) {
+    console.error("gagal memuat dari Supabase", e);
+    state.loadError = (e && e.message) ? e.message : String(e);
+    notify("Gagal memuat data: " + ((e && e.message) ? e.message : String(e)), "error");
+  }
+}
+
+async function persist() {
+  // NO-OP: Data is now saved per-operation directly to database
+  // This function kept for backward compatibility
+  return Promise.resolve();
 }
 
 async function restoreSession() {
@@ -354,7 +548,10 @@ async function restoreSession() {
 }
 
 async function persist() {
-  try { await dbSet(STORAGE_KEY, state.data); } catch (e) { console.error("gagal menyimpan", e); notify("Gagal menyimpan ke database, cek koneksi", "error"); }
+  // NO-OP: Data is now saved per-operation directly to normalized database tables
+  // This function is kept for backward compatibility with existing code references
+  console.warn("persist() is deprecated - data operations now write directly to database");
+  return Promise.resolve();
 }
 
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -374,129 +571,471 @@ function pushTransaction(base) {
 }
 
 // ---------------- mutations ----------------
-function stockIn(warehouseId, productId, qty, note) {
-  if (!warehouseId || !productId || !qty || qty <= 0) return notify("Lengkapi gudang, produk dan jumlah", "error");
-  state.data.stock[warehouseId][productId] = (state.data.stock[warehouseId][productId] || 0) + qty;
-  pushTransaction({ type: "masuk", to: warehouseId, productId, qty, note: note || "Barang masuk dari principal" });
-  persist(); render();
-  notify("Barang masuk berhasil dicatat");
+async function stockIn(warehouseId, productId, qty, note) {
+  if (!warehouseId || !productId || !qty || qty <= 0)
+    return notify("Lengkapi gudang, produk dan jumlah", "error");
+
+  try {
+    // 1. Insert transaction
+    const { error: txError } = await sb.from('transactions').insert({
+      id: uid('trx'),
+      type: 'masuk',
+      date: new Date().toISOString(),
+      to_id: warehouseId,
+      product_id: productId,
+      qty: qty,
+      note: note || 'Barang masuk dari principal'
+    });
+    if (txError) throw txError;
+
+    // 2. Update warehouse stock
+    const currentQty = state.data.stock[warehouseId]?.[productId] || 0;
+    const { error: stockError } = await sb.from('warehouse_stock').upsert({
+      warehouse_id: warehouseId,
+      product_id: productId,
+      quantity: currentQty + qty
+    }, { onConflict: 'warehouse_id,product_id' });
+    if (stockError) throw stockError;
+
+    // 3. Reload and render
+    await loadData();
+    render();
+    notify("Barang masuk berhasil dicatat");
+  } catch (e) {
+    console.error('stockIn error:', e);
+    notify("Gagal menyimpan: " + (e.message || e), "error");
+  }
 }
 
-function transferWarehouse(fromId, toId, productId, qty) {
-  if (!fromId || !toId || fromId === toId || !productId || !qty || qty <= 0) return notify("Lengkapi asal, tujuan, produk dan jumlah", "error");
+async function transferWarehouse(fromId, toId, productId, qty) {
+  // NOTE: This is a multi-step operation without transaction wrapper
+  // In production, consider using Supabase RPC for atomicity
+  
+  if (!fromId || !toId || !productId || !qty || qty <= 0)
+    return notify("Lengkapi gudang asal, tujuan, produk dan jumlah", "error");
+  
+  if (fromId === toId)
+    return notify("Gudang asal dan tujuan harus berbeda", "error");
+
   const avail = state.data.stock[fromId]?.[productId] || 0;
-  if (qty > avail) return notify("Stok " + fromId + " tidak cukup (tersedia " + avail + ")", "error");
-  state.data.stock[fromId][productId] -= qty;
-  state.data.stock[toId][productId] = (state.data.stock[toId][productId] || 0) + qty;
-  pushTransaction({ type: "transfer", from: fromId, to: toId, productId, qty, note: "Perpindahan antar gudang" });
-  persist(); render();
-  notify("Perpindahan stok berhasil");
+  if (qty > avail)
+    return notify("Stok gudang asal tidak cukup (tersedia " + avail + ")", "error");
+
+  try {
+    // 1. Insert transaction
+    const { error: txError } = await sb.from('transactions').insert({
+      id: uid('trx'),
+      type: 'transfer',
+      date: new Date().toISOString(),
+      from_id: fromId,
+      to_id: toId,
+      product_id: productId,
+      qty: qty,
+      note: 'Transfer antar gudang'
+    });
+    if (txError) throw txError;
+
+    // 2. Decrease source warehouse stock
+    const { error: fromError } = await sb.from('warehouse_stock').upsert({
+      warehouse_id: fromId,
+      product_id: productId,
+      quantity: avail - qty
+    }, { onConflict: 'warehouse_id,product_id' });
+    if (fromError) throw fromError;
+
+    // 3. Increase destination warehouse stock
+    const toQty = state.data.stock[toId]?.[productId] || 0;
+    const { error: toError } = await sb.from('warehouse_stock').upsert({
+      warehouse_id: toId,
+      product_id: productId,
+      quantity: toQty + qty
+    }, { onConflict: 'warehouse_id,product_id' });
+    if (toError) throw toError;
+
+    await loadData();
+    render();
+    notify("Transfer antar gudang berhasil");
+  } catch (e) {
+    console.error('transferWarehouse error:', e);
+    notify("Gagal transfer: " + (e.message || e), "error");
+  }
 }
 
-function distribusiToSales(warehouseId, salesId, productId, qty) {
-  if (!warehouseId || !salesId || !productId || !qty || qty <= 0) return notify("Lengkapi gudang asal, sales, produk dan jumlah", "error");
+async function distribusiToSales(warehouseId, salesId, productId, qty) {
+  if (!warehouseId || !salesId || !productId || !qty || qty <= 0)
+    return notify("Lengkapi gudang asal, sales, produk dan jumlah", "error");
+
   const avail = state.data.stock[warehouseId]?.[productId] || 0;
-  if (qty > avail) return notify("Stok gudang tidak cukup (tersedia " + avail + ")", "error");
-  state.data.stock[warehouseId][productId] -= qty;
-  state.data.salesStock[salesId][productId] = (state.data.salesStock[salesId][productId] || 0) + qty;
-  pushTransaction({ type: "distribusi", from: warehouseId, to: salesId, productId, qty, note: "Distribusi ke tim sales" });
-  persist(); render();
-  notify("Barang berhasil didistribusikan ke sales");
+  if (qty > avail)
+    return notify("Stok gudang tidak cukup (tersedia " + avail + ")", "error");
+
+  try {
+    // 1. Insert transaction
+    await sb.from('transactions').insert({
+      id: uid('trx'),
+      type: 'distribusi',
+      date: new Date().toISOString(),
+      from_id: warehouseId,
+      to_id: salesId,
+      product_id: productId,
+      qty: qty,
+      note: 'Distribusi ke tim sales'
+    });
+
+    // 2. Decrease warehouse stock
+    await sb.from('warehouse_stock').upsert({
+      warehouse_id: warehouseId,
+      product_id: productId,
+      quantity: avail - qty
+    }, { onConflict: 'warehouse_id,product_id' });
+
+    // 3. Increase sales stock
+    const salesQty = state.data.salesStock[salesId]?.[productId] || 0;
+    await sb.from('sales_stock').upsert({
+      sales_id: salesId,
+      product_id: productId,
+      quantity: salesQty + qty
+    }, { onConflict: 'sales_id,product_id' });
+
+    await loadData();
+    render();
+    notify("Barang berhasil didistribusikan ke sales");
+  } catch (e) {
+    console.error('distribusiToSales error:', e);
+    notify("Gagal distribusi: " + (e.message || e), "error");
+  }
 }
 
-function addSalesPerson(id, name, gudangId, supervisor) {
+async function addSalesPerson(id, name, gudangId, supervisor) {
+  // 1. INPUT VALIDATION
   id = (id || "").trim();
   name = (name || "").trim();
   if (!id || !name) return notify("ID Sales dan Nama Sales wajib diisi", "error");
-  if (state.data.salesTeam.find(s => s.id.toLowerCase() === id.toLowerCase())) return notify("ID Sales \"" + id + "\" sudah dipakai", "error");
-  state.data.salesTeam.push({ id, name, gudang: gudangId || "", supervisor: (supervisor||"").trim() });
-  state.data.salesStock[id] = {};
-  state.data.products.forEach(p => state.data.salesStock[id][p.id] = 0);
-  state.ui.salesSelectedStok = id;
-  persist(); render();
-  notify(name + " ditambahkan ke tim sales");
+
+  // 2. BUSINESS LOGIC VALIDATION - Check for duplicate ID
+  if (state.data.salesTeam.find(s => s.id.toLowerCase() === id.toLowerCase()))
+    return notify("ID Sales \"" + id + "\" sudah dipakai", "error");
+
+  try {
+    // 3. DATABASE OPERATION - Insert sales person
+    const { error: salesError } = await sb.from('sales_team').insert({
+      id: id,
+      name: name,
+      gudang: gudangId || null,
+      supervisor: (supervisor || "").trim() || null
+    });
+    if (salesError) throw salesError;
+
+    // 4. DATABASE OPERATION - Initialize stock rows for all products
+    const stockInserts = state.data.products.map(p => ({
+      sales_id: id,
+      product_id: p.id,
+      quantity: 0
+    }));
+    const { error: stockError } = await sb.from('sales_stock').insert(stockInserts);
+    if (stockError) throw stockError;
+
+    // 5. RELOAD DATA
+    state.ui.salesSelectedStok = id;
+    await loadData();
+
+    // 6. UPDATE UI
+    render();
+
+    // 7. SUCCESS NOTIFICATION
+    notify(name + " ditambahkan ke tim sales");
+  } catch (e) {
+    console.error('addSalesPerson error:', e);
+    notify("Gagal menambahkan sales: " + (e.message || e), "error");
+  }
 }
 
-function deleteSalesPerson(id) {
+async function deleteSalesPerson(id) {
+  // 1. INPUT VALIDATION - Find sales person
   const sales = state.data.salesTeam.find(s => s.id === id);
   if (!sales) return;
+
+  // 2. BUSINESS LOGIC VALIDATION - Check total stock must be 0
   const totalStock = Object.values(state.data.salesStock[id] || {}).reduce((a,b)=>a+b,0);
-  if (totalStock > 0) return notify("Stok " + sales.name + " harus dikosongkan dulu sebelum bisa dihapus (sisa " + nfmt(totalStock) + " unit)", "error");
-  state.data.salesTeam = state.data.salesTeam.filter(s => s.id !== id);
-  delete state.data.salesStock[id];
-  if (state.ui.salesSelectedStok === id) state.ui.salesSelectedStok = "";
-  persist(); render();
-  notify(sales.name + " berhasil dihapus dari tim sales");
+  if (totalStock > 0)
+    return notify("Stok " + sales.name + " harus dikosongkan dulu (sisa " + nfmt(totalStock) + " unit)", "error");
+
+  try {
+    // 3. DATABASE OPERATION - Delete from sales_team (CASCADE will handle sales_stock)
+    const { error } = await sb.from('sales_team').delete().eq('id', id);
+    if (error) throw error;
+
+    // 4. RELOAD DATA
+    if (state.ui.salesSelectedStok === id) state.ui.salesSelectedStok = "";
+    await loadData();
+
+    // 5. UPDATE UI
+    render();
+
+    // 6. SUCCESS NOTIFICATION
+    notify(sales.name + " berhasil dihapus dari tim sales");
+  } catch (e) {
+    console.error('deleteSalesPerson error:', e);
+    notify("Gagal menghapus sales: " + (e.message || e), "error");
+  }
 }
 
-function addCabang(name, kota) {
-  if (!name || !name.trim()) return;
-  const id = uid("cabang");
-  state.data.warehouses.push({ id, name: name.trim(), type: "cabang", kota: kota || "-" });
-  state.data.stock[id] = {};
-  state.data.products.forEach(p => state.data.stock[id][p.id] = 0);
-  state.ui.cabangSelected = id;
-  persist(); render();
-  notify(name + " ditambahkan sebagai gudang cabang");
+async function addCabang(name, kota) {
+  // 1. Validate name (required)
+  if (!name || !name.trim()) {
+    return notify("Nama gudang cabang wajib diisi", "error");
+  }
+
+  try {
+    // 2. Generate warehouse id with uid('cabang')
+    const id = uid("cabang");
+
+    // 3. INSERT into warehouses with type='cabang'
+    const { error: whError } = await sb.from('warehouses').insert({
+      id: id,
+      name: name.trim(),
+      type: 'cabang',
+      kota: kota || "-"
+    });
+    if (whError) throw whError;
+
+    // 4. Initialize stock rows for all products (INSERT into warehouse_stock with qty=0)
+    const stockInserts = state.data.products.map(p => ({
+      warehouse_id: id,
+      product_id: p.id,
+      quantity: 0
+    }));
+    const { error: stockError } = await sb.from('warehouse_stock').insert(stockInserts);
+    if (stockError) throw stockError;
+
+    // 5. Set state.ui.cabangSelected
+    state.ui.cabangSelected = id;
+    
+    // 6. Call loadData(), render(), notify()
+    await loadData();
+    render();
+    notify(name + " ditambahkan sebagai gudang cabang");
+  } catch (e) {
+    console.error('addCabang error:', e);
+    notify("Gagal menambahkan cabang: " + (e.message || e), "error");
+  }
 }
 
-function reportIssue(sourceType, sourceId, productId, qty, reason) {
-  if (!sourceId || !productId || !qty || qty <= 0) return notify("Lengkapi lokasi, produk dan jumlah", "error");
+async function reportIssue(sourceType, sourceId, productId, qty, reason) {
+  if (!sourceId || !productId || !qty || qty <= 0)
+    return notify("Lengkapi lokasi, produk dan jumlah", "error");
+
   const bucket = sourceType === "sales" ? state.data.salesStock : state.data.stock;
   const avail = bucket[sourceId]?.[productId] || 0;
-  if (qty > avail) return notify("Stok di lokasi tersebut tidak cukup (tersedia " + avail + ")", "error");
-  bucket[sourceId][productId] -= qty;
-  state.data.returItems.unshift({ id: uid("ret"), productId, qty, sourceType, sourceId, reason: reason || "-", status: "menunggu_penggantian", date: new Date().toISOString() });
-  pushTransaction({ type: "retur_keluar", from: sourceId, productId, qty, note: reason || "Barang bermasalah, menunggu penggantian principal" });
-  persist(); render();
-  notify("Barang bermasalah dicatat, menunggu penggantian principal", "warning");
+  if (qty > avail)
+    return notify("Stok di lokasi tersebut tidak cukup (tersedia " + avail + ")", "error");
+
+  try {
+    const returId = uid('ret');
+
+    // 1. Insert retur item
+    await sb.from('retur_items').insert({
+      id: returId,
+      product_id: productId,
+      qty: qty,
+      source_type: sourceType,
+      source_id: sourceId,
+      reason: reason || "-",
+      status: "menunggu_penggantian",
+      date: new Date().toISOString()
+    });
+
+    // 2. Insert transaction
+    await sb.from('transactions').insert({
+      id: uid('trx'),
+      type: 'retur_keluar',
+      date: new Date().toISOString(),
+      from_id: sourceId,
+      product_id: productId,
+      qty: qty,
+      note: reason || "Barang bermasalah, menunggu penggantian principal"
+    });
+
+    // 3. Decrease stock
+    if (sourceType === "sales") {
+      await sb.from('sales_stock').upsert({
+        sales_id: sourceId,
+        product_id: productId,
+        quantity: avail - qty
+      }, { onConflict: 'sales_id,product_id' });
+    } else {
+      await sb.from('warehouse_stock').upsert({
+        warehouse_id: sourceId,
+        product_id: productId,
+        quantity: avail - qty
+      }, { onConflict: 'warehouse_id,product_id' });
+    }
+
+    await loadData();
+    render();
+    notify("Barang bermasalah dicatat, menunggu penggantian principal", "warning");
+  } catch (e) {
+    console.error('reportIssue error:', e);
+    notify("Gagal melaporkan: " + (e.message || e), "error");
+  }
 }
 
-function resolveReplacement(returId) {
+async function resolveReplacement(returId) {
   const item = state.data.returItems.find(r => r.id === returId);
   if (!item) return;
-  item.status = "selesai_diganti";
-  item.resolvedDate = new Date().toISOString();
-  state.data.stock.pusat[item.productId] = (state.data.stock.pusat[item.productId] || 0) + item.qty;
-  pushTransaction({ type: "penggantian_masuk", to: "pusat", productId: item.productId, qty: item.qty, note: "Penggantian dari principal diterima" });
-  persist(); render();
-  notify("Penggantian diterima, stok gudang pusat diperbarui");
+
+  try {
+    // 1. Update retur status
+    await sb.from('retur_items').update({
+      status: 'selesai_diganti',
+      resolved_date: new Date().toISOString()
+    }).eq('id', returId);
+
+    // 2. Insert transaction
+    await sb.from('transactions').insert({
+      id: uid('trx'),
+      type: 'penggantian_masuk',
+      date: new Date().toISOString(),
+      to_id: 'pusat',
+      product_id: item.productId,
+      qty: item.qty,
+      note: "Penggantian dari principal diterima"
+    });
+
+    // 3. Increase pusat stock
+    const pusatQty = state.data.stock.pusat?.[item.productId] || 0;
+    await sb.from('warehouse_stock').upsert({
+      warehouse_id: 'pusat',
+      product_id: item.productId,
+      quantity: pusatQty + item.qty
+    }, { onConflict: 'warehouse_id,product_id' });
+
+    await loadData();
+    render();
+    notify("Penggantian diterima, stok gudang pusat diperbarui");
+  } catch (e) {
+    console.error('resolveReplacement error:', e);
+    notify("Gagal resolve: " + (e.message || e), "error");
+  }
 }
 
-function applySalesUpload() {
-  const rows = state.ui.uploadRows;
-  let applied = 0;
-  rows.forEach(r => {
-    if (r.status !== "ok") return;
-    state.data.salesStock[r.salesId][r.productId] -= r.qty;
-    pushTransaction({ type: "penjualan", from: r.salesId, productId: r.productId, qty: r.qty, note: "Upload data penjualan" });
-    applied++;
-  });
-  state.ui.uploadRows = [];
-  state.ui.uploadFileName = "";
-  persist(); render();
-  notify(applied + " baris penjualan berhasil diproses, stok sales dikurangi");
+async function applySalesUpload() {
+  const rows = state.ui.uploadRows.filter(r => r.status === "ok");
+  if (rows.length === 0) return;
+
+  try {
+    for (const r of rows) {
+      // 1. Insert transaction
+      await sb.from('transactions').insert({
+        id: uid('trx'),
+        type: 'penjualan',
+        date: new Date().toISOString(),
+        from_id: r.salesId,
+        product_id: r.productId,
+        qty: r.qty,
+        note: "Upload data penjualan"
+      });
+
+      // 2. Decrease sales stock
+      const currentQty = state.data.salesStock[r.salesId]?.[r.productId] || 0;
+      await sb.from('sales_stock').upsert({
+        sales_id: r.salesId,
+        product_id: r.productId,
+        quantity: currentQty - r.qty
+      }, { onConflict: 'sales_id,product_id' });
+    }
+
+    state.ui.uploadRows = [];
+    state.ui.uploadFileName = "";
+    await loadData();
+    render();
+    notify(rows.length + " baris penjualan berhasil diproses");
+  } catch (e) {
+    console.error('applySalesUpload error:', e);
+    notify("Gagal upload: " + (e.message || e), "error");
+  }
 }
 
-function applyCatalogImport() {
+async function applyCatalogImport() {
   const rows = state.ui.catalogRows.filter(r => r.status === "new" || r.status === "update");
   if (!rows.length) return;
-  let added = 0, updated = 0;
 
-  rows.forEach(r => {
-    const existing = state.data.products.find(p => p.id === r.id);
-    if (existing) {
-      existing.name = r.name; existing.brand = r.brand; existing.category = r.category;
-      existing.price = r.price; existing.cluster = r.cluster; existing.familyPaket = r.familyPaket;
-      existing.materialCode = r.materialCode;
-      updated++;
-    } else {
-      state.data.products.push({ id: r.id, name: r.name, brand: r.brand, category: r.category, price: r.price, cluster: r.cluster, familyPaket: r.familyPaket, materialCode: r.materialCode });
-      state.data.warehouses.forEach(w => { if (!(r.id in state.data.stock[w.id])) state.data.stock[w.id][r.id] = 0; });
-      state.data.salesTeam.forEach(s => { if (!(r.id in state.data.salesStock[s.id])) state.data.salesStock[s.id][r.id] = 0; });
-      added++;
+  try {
+    let added = 0, updated = 0;
+
+    for (const r of rows) {
+      const existing = state.data.products.find(p => p.id === r.id);
+
+      if (existing) {
+        // Update existing product
+        await sb.from('products').update({
+          name: r.name,
+          category: r.category,
+          brand: r.brand,
+          material_code: r.materialCode,
+          family_paket: r.familyPaket,
+          cluster: r.cluster,
+          price: r.price
+        }).eq('id', r.id);
+        updated++;
+      } else {
+        // Insert new product
+        await sb.from('products').insert({
+          id: r.id,
+          name: r.name,
+          category: r.category,
+          brand: r.brand,
+          material_code: r.materialCode,
+          family_paket: r.familyPaket,
+          cluster: r.cluster,
+          price: r.price
+        });
+
+        // Initialize stock for all warehouses
+        for (const w of state.data.warehouses) {
+          await sb.from('warehouse_stock').insert({
+            warehouse_id: w.id,
+            product_id: r.id,
+            quantity: 0
+          });
+        }
+
+        // Initialize stock for all sales
+        for (const s of state.data.salesTeam) {
+          await sb.from('sales_stock').insert({
+            sales_id: s.id,
+            product_id: r.id,
+            quantity: 0
+          });
+        }
+
+        added++;
+      }
     }
-  });
+
+    // Update warehouse name if cluster changed
+    const importedCluster = (rows.find(r => r.cluster) || {}).cluster;
+    if (importedCluster) {
+      const pusat = state.data.warehouses.find(w => w.id === "pusat");
+      const newName = "Gudang Pusat - " + importedCluster;
+      if (pusat && pusat.name !== newName) {
+        await sb.from('warehouses').update({
+          name: newName,
+          kota: importedCluster
+        }).eq('id', 'pusat');
+      }
+    }
+
+    state.ui.catalogRows = [];
+    state.ui.catalogFileName = "";
+    await loadData();
+    render();
+    notify(added + " produk baru ditambahkan, " + updated + " produk diperbarui");
+  } catch (e) {
+    console.error('applyCatalogImport error:', e);
+    notify("Gagal import: " + (e.message || e), "error");
+  }
+}
 
   // nama Gudang Pusat mengikuti Sales Cluster dari data yang diupload
   const importedCluster = (rows.find(r => r.cluster) || {}).cluster;
@@ -601,16 +1140,40 @@ function handleStockImportFile(input) {
     reader.readAsArrayBuffer(file);
   }
 }
-function applyStockImport() {
+async function applyStockImport() {
   const rows = state.ui.stockImportRows.filter(r => r.status === "ok");
-  rows.forEach(r => {
-    state.data.stock[r.warehouseId][r.productId] = r.qty;
-    pushTransaction({ type: "stok_awal", to: r.warehouseId, productId: r.productId, qty: r.qty, note: "Update stok awal via import (" + r.warehouseName + ")" });
-  });
-  state.ui.stockImportRows = [];
-  state.ui.stockImportFileName = "";
-  persist(); render();
-  notify(rows.length + " baris stok awal berhasil diterapkan");
+  if (rows.length === 0) return;
+
+  try {
+    for (const r of rows) {
+      // 1. Upsert stock
+      await sb.from('warehouse_stock').upsert({
+        warehouse_id: r.warehouseId,
+        product_id: r.productId,
+        quantity: r.qty
+      }, { onConflict: 'warehouse_id,product_id' });
+
+      // 2. Insert transaction
+      await sb.from('transactions').insert({
+        id: uid('trx'),
+        type: 'stok_awal',
+        date: new Date().toISOString(),
+        to_id: r.warehouseId,
+        product_id: r.productId,
+        qty: r.qty,
+        note: "Update stok awal via import (" + r.warehouseName + ")"
+      });
+    }
+
+    state.ui.stockImportRows = [];
+    state.ui.stockImportFileName = "";
+    await loadData();
+    render();
+    notify(rows.length + " baris stok awal berhasil diterapkan");
+  } catch (e) {
+    console.error('applyStockImport error:', e);
+    notify("Gagal import stok: " + (e.message || e), "error");
+  }
 }
 
 // ---------------- Import massal daftar sales ----------------
@@ -669,20 +1232,57 @@ function handleSalesImportFile(input) {
     reader.readAsArrayBuffer(file);
   }
 }
-function applySalesImport() {
+async function applySalesImport() {
   const rows = state.ui.salesImportRows.filter(r => r.status === "new" || r.status === "update");
-  let added = 0, updated = 0;
-  rows.forEach(r => {
-    const existing = state.data.salesTeam.find(s => s.id.toLowerCase() === r.id.toLowerCase());
-    if (existing) {
-      existing.name = r.name; existing.gudang = r.gudang; existing.supervisor = r.supervisor;
-      updated++;
-    } else {
-      state.data.salesTeam.push({ id: r.id, name: r.name, gudang: r.gudang, supervisor: r.supervisor });
-      state.data.salesStock[r.id] = {};
-      state.data.products.forEach(p => state.data.salesStock[r.id][p.id] = 0);
-      added++;
+  if (rows.length === 0) return;
+
+  try {
+    let added = 0, updated = 0;
+
+    for (const r of rows) {
+      const existing = state.data.salesTeam.find(s => s.id.toLowerCase() === r.id.toLowerCase());
+
+      if (existing) {
+        // Update existing sales
+        await sb.from('sales_team').update({
+          name: r.name,
+          gudang: r.gudang,
+          supervisor: r.supervisor
+        }).eq('id', existing.id);
+        updated++;
+      } else {
+        // Insert new sales
+        await sb.from('sales_team').insert({
+          id: r.id,
+          name: r.name,
+          gudang: r.gudang,
+          supervisor: r.supervisor
+        });
+
+        // Initialize stock for all products
+        for (const p of state.data.products) {
+          await sb.from('sales_stock').insert({
+            sales_id: r.id,
+            product_id: p.id,
+            quantity: 0
+          });
+        }
+
+        added++;
+      }
     }
+
+    state.ui.salesImportRows = [];
+    state.ui.salesImportFileName = "";
+    if (rows.length && !state.ui.salesSelectedStok) state.ui.salesSelectedStok = rows[0].id;
+    await loadData();
+    render();
+    notify(added + " sales baru ditambahkan, " + updated + " sales diperbarui");
+  } catch (e) {
+    console.error('applySalesImport error:', e);
+    notify("Gagal import sales: " + (e.message || e), "error");
+  }
+}
   });
   state.ui.salesImportRows = [];
   state.ui.salesImportFileName = "";
@@ -714,29 +1314,66 @@ async function doLogout() {
   try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
   render();
 }
-function addUser(username, password, name, role, cabangId) {
-  username = (username||"").trim(); password = (password||"").trim(); name = (name||"").trim();
-  if (!username || !password || !name) return notify("Username, password, dan nama wajib diisi", "error");
-  if (role === "hq" && !isHQ()) return notify("Hanya akun Head Quarter yang bisa menambahkan akun Head Quarter", "error");
-  if (state.data.users.find(u => u.username.toLowerCase() === username.toLowerCase())) return notify("Username \"" + username + "\" sudah dipakai", "error");
-  if (role === "admin_cabang" && !cabangId) return notify("Pilih gudang cabang untuk akun ini", "error");
-  state.data.users.push({ id: uid("user"), username, password, name, role, cabangId: role==="admin_cabang" ? cabangId : "" });
-  persist(); render();
-  notify("Akun " + name + " berhasil ditambahkan");
+async function addUser(username, password, name, role, cabangId) {
+  username = (username||"").trim();
+  password = (password||"").trim();
+  name = (name||"").trim();
+
+  if (!username || !password || !name)
+    return notify("Username, password, dan nama wajib diisi", "error");
+  if (role === "hq" && !isHQ())
+    return notify("Hanya akun Head Quarter yang bisa menambahkan akun Head Quarter", "error");
+  if (state.data.users.find(u => u.username.toLowerCase() === username.toLowerCase()))
+    return notify("Username \"" + username + "\" sudah dipakai", "error");
+  if (role === "admin_cabang" && !cabangId)
+    return notify("Pilih gudang cabang untuk akun ini", "error");
+
+  try {
+    await sb.from('users').insert({
+      id: uid("user"),
+      username: username,
+      password: password,
+      name: name,
+      role: role,
+      cabang_id: role === "admin_cabang" ? cabangId : null
+    });
+
+    await loadData();
+    render();
+    notify("Akun " + name + " berhasil ditambahkan");
+  } catch (e) {
+    console.error('addUser error:', e);
+    notify("Gagal menambahkan user: " + (e.message || e), "error");
+  }
 }
-function deleteUser(userId) {
+async function deleteUser(userId) {
   const u = state.data.users.find(x => x.id === userId);
   if (!u) return;
-  if (u.role === "hq" && !isHQ()) return notify("Tidak punya izin menghapus akun Head Quarter", "error");
+  if (u.role === "hq" && !isHQ())
+    return notify("Tidak punya izin menghapus akun Head Quarter", "error");
+
   const hqAdmins = state.data.users.filter(x => x.role === "hq");
-  if (u.role === "hq" && hqAdmins.length <= 1) return notify("Tidak bisa menghapus satu-satunya akun Head Quarter", "error");
+  if (u.role === "hq" && hqAdmins.length <= 1)
+    return notify("Tidak bisa menghapus satu-satunya akun Head Quarter", "error");
+
   const pusatAdmins = state.data.users.filter(x => x.role === "admin_pusat");
-  if (u.role === "admin_pusat" && pusatAdmins.length <= 1) return notify("Tidak bisa menghapus satu-satunya akun Admin Pusat", "error");
-  if (state.session && state.session.id === userId) return notify("Tidak bisa menghapus akun yang sedang login", "error");
-  if (!confirm('Hapus akun "' + u.name + '" (' + u.username + ')?')) return;
-  state.data.users = state.data.users.filter(x => x.id !== userId);
-  persist(); render();
-  notify("Akun " + u.name + " dihapus");
+  if (u.role === "admin_pusat" && pusatAdmins.length <= 1)
+    return notify("Tidak bisa menghapus satu-satunya akun Admin Pusat", "error");
+
+  if (state.session && state.session.id === userId)
+    return notify("Tidak bisa menghapus akun sendiri", "error");
+
+  try {
+    const { error } = await sb.from('users').delete().eq('id', userId);
+    if (error) return notify("Gagal hapus user: " + error.message, "error");
+    
+    await loadData();
+    render();
+    notify("User " + u.name + " berhasil dihapus", "success");
+  } catch (e) {
+    console.error('deleteUser error:', e);
+    notify("Gagal menghapus user: " + (e.message || e), "error");
+  }
 }
 
 // ---------------- computed ----------------
