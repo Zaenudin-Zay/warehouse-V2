@@ -1135,8 +1135,14 @@ async function applyCatalogImport() {
   try {
     let added = 0, updated = 0;
 
+    // Cek langsung ke database (bukan cache lokal) supaya akurat meski
+    // produk itu baru saja ditambahkan lewat cluster/sesi lain.
+    const { data: freshProducts, error: freshErr } = await sb.from('products').select('id');
+    if (freshErr) throw freshErr;
+    const existingIds = new Set((freshProducts || []).map(p => p.id));
+
     for (const r of rows) {
-      const existing = state.data.products.find(p => p.id === r.id);
+      const existing = existingIds.has(r.id);
 
       if (existing) {
         // Update existing product
@@ -1152,8 +1158,9 @@ async function applyCatalogImport() {
         if (updError) throw updError;
         updated++;
       } else {
-        // Insert new product
-        const { error: prodInsError } = await sb.from('products').insert({
+        // Insert new product (upsert sebagai jaring pengaman kalau ID yang
+        // sama muncul dua kali dalam file yang sama)
+        const { error: prodInsError } = await sb.from('products').upsert({
           id: r.id,
           name: r.name,
           category: r.category,
@@ -1162,26 +1169,27 @@ async function applyCatalogImport() {
           family_paket: r.familyPaket,
           cluster: r.cluster,
           price: r.price
-        });
+        }, { onConflict: 'id' });
         if (prodInsError) throw prodInsError;
+        existingIds.add(r.id);
 
         // Initialize stock for all warehouses
         for (const w of state.data.warehouses) {
-          const { error: wsError } = await sb.from('warehouse_stock').insert({
+          const { error: wsError } = await sb.from('warehouse_stock').upsert({
             warehouse_id: w.id,
             product_id: r.id,
             quantity: 0
-          });
+          }, { onConflict: 'warehouse_id,product_id', ignoreDuplicates: true });
           if (wsError) throw wsError;
         }
 
         // Initialize stock for all sales
         for (const s of state.data.salesTeam) {
-          const { error: ssError } = await sb.from('sales_stock').insert({
+          const { error: ssError } = await sb.from('sales_stock').upsert({
             sales_id: s.id,
             product_id: r.id,
             quantity: 0
-          });
+          }, { onConflict: 'sales_id,product_id', ignoreDuplicates: true });
           if (ssError) throw ssError;
         }
 
@@ -1189,16 +1197,18 @@ async function applyCatalogImport() {
       }
     }
 
-    // Update warehouse name if cluster changed
+    // Update warehouse name if cluster changed (hanya untuk admin pusat yang
+    // memang terikat ke satu gudang pusat spesifik - HQ dilewati karena
+    // tidak ada satu gudang pusat tunggal yang jadi acuan)
     const importedCluster = (rows.find(r => r.cluster) || {}).cluster;
-    if (importedCluster) {
-      const pusat = state.data.warehouses.find(w => w.id === "pusat");
+    if (importedCluster && isPusatAdmin() && myGudangPusatId()) {
+      const pusat = state.data.warehouses.find(w => w.id === myGudangPusatId());
       const newName = "Gudang Pusat - " + importedCluster;
       if (pusat && pusat.name !== newName) {
         const { error: whUpdError } = await sb.from('warehouses').update({
           name: newName,
           kota: importedCluster
-        }).eq('id', 'pusat');
+        }).eq('id', myGudangPusatId());
         if (whUpdError) throw whUpdError;
       }
     }
@@ -1236,13 +1246,17 @@ function downloadStockTemplate() {
 }
 function downloadCatalogTemplate() {
   const headers = ["Product ID", "Product Name", "Brand", "Category", "Sales Cluster", "Family Paket", "Material Code", "Harga Paket (Rp)"];
+  // Gunakan produk milik cluster admin yang login saja (myClusterProducts),
+  // bukan seluruh katalog nasional - supaya admin pusat cluster lain tidak
+  // dapat Product ID yang bukan miliknya saat "Download template".
+  const scoped = myClusterProducts();
   let rows;
-  if (state.data.products.length) {
-    rows = state.data.products.map(p => [p.id, p.name, p.brand, p.category, p.cluster || "", p.familyPaket || "", p.materialCode || "", p.price]);
+  if (scoped.length) {
+    rows = scoped.map(p => [p.id, p.name, p.brand, p.category, p.cluster || "", p.familyPaket || "", p.materialCode || "", p.price]);
   } else {
     rows = [
-      ["2602005713", "SP XL 10K", "XL", "SP", "CJ-Yogyakarta Magelang", "SP Kosong", "SPXL10K", 10000],
-      ["2603000002", "PV Smartfren Reguler", "SMARTFREN", "PV", "CJ-Yogyakarta Magelang", "PV Kosong", "PVXL100", 500],
+      ["CONTOH-001", "Nama Produk Contoh", "XL", "SP", myCluster() || "Nama Cluster Anda", "Family Paket Contoh", "KODE-MATERIAL", 10000],
+      ["CONTOH-002", "Nama Produk Contoh 2", "SMARTFREN", "PV", myCluster() || "Nama Cluster Anda", "Family Paket Contoh", "KODE-MATERIAL", 500],
     ];
   }
   downloadCSV("template_katalog_barang.csv", headers, rows);
