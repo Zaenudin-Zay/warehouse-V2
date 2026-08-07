@@ -459,7 +459,7 @@ async function initializeSeedData() {
     // 4. INSERT admin user (username: admin, password: admin)
     console.log('Seeding users...');
     const users = [
-      { id: uid("user"), username: "admin", password: "admin", name: "Administrator", role: "hq", cabang_id: null }
+      { username: "admin", password: "admin", name: "Administrator", role: "hq", cabang_id: null }
     ];
     
     const { error: userError } = await sb.from('users').insert(users);
@@ -633,14 +633,14 @@ async function loadData() {
       state.data.users = seed.users;
       // Save users to database
       for (const user of seed.users) {
-        await sb.from('users').insert({
-          id: user.id,
+        const { error: seedUserError } = await sb.from('users').insert({
           username: user.username,
           password: user.password,
           name: user.name,
           role: user.role,
-          cabang_id: user.cabangId
+          cabang_id: user.cabangId || null
         });
+        if (seedUserError) console.error('Gagal membuat user awal ' + user.username + ':', seedUserError);
       }
     }
   } catch (e) {
@@ -790,7 +790,7 @@ async function distribusiToSales(warehouseId, salesId, productId, qty) {
 
   try {
     // 1. Insert transaction
-    await sb.from('transactions').insert({
+    const { error: txError } = await sb.from('transactions').insert({
       id: uid('trx'),
       type: 'distribusi',
       date: new Date().toISOString(),
@@ -800,21 +800,24 @@ async function distribusiToSales(warehouseId, salesId, productId, qty) {
       qty: qty,
       note: 'Distribusi ke tim sales'
     });
+    if (txError) throw txError;
 
     // 2. Decrease warehouse stock
-    await sb.from('warehouse_stock').upsert({
+    const { error: fromError } = await sb.from('warehouse_stock').upsert({
       warehouse_id: warehouseId,
       product_id: productId,
       quantity: avail - qty
     }, { onConflict: 'warehouse_id,product_id' });
+    if (fromError) throw fromError;
 
     // 3. Increase sales stock
     const salesQty = state.data.salesStock[salesId]?.[productId] || 0;
-    await sb.from('sales_stock').upsert({
+    const { error: toError } = await sb.from('sales_stock').upsert({
       sales_id: salesId,
       product_id: productId,
       quantity: salesQty + qty
     }, { onConflict: 'sales_id,product_id' });
+    if (toError) throw toError;
 
     await loadData();
     render();
@@ -994,7 +997,7 @@ async function reportIssue(sourceType, sourceId, productId, qty, reason) {
     const returId = uid('ret');
 
     // 1. Insert retur item
-    await sb.from('retur_items').insert({
+    const { error: returError } = await sb.from('retur_items').insert({
       id: returId,
       product_id: productId,
       qty: qty,
@@ -1004,9 +1007,10 @@ async function reportIssue(sourceType, sourceId, productId, qty, reason) {
       status: "menunggu_penggantian",
       date: new Date().toISOString()
     });
+    if (returError) throw returError;
 
     // 2. Insert transaction
-    await sb.from('transactions').insert({
+    const { error: txError } = await sb.from('transactions').insert({
       id: uid('trx'),
       type: 'retur_keluar',
       date: new Date().toISOString(),
@@ -1015,20 +1019,23 @@ async function reportIssue(sourceType, sourceId, productId, qty, reason) {
       qty: qty,
       note: reason || "Barang bermasalah, menunggu penggantian principal"
     });
+    if (txError) throw txError;
 
     // 3. Decrease stock
     if (sourceType === "sales") {
-      await sb.from('sales_stock').upsert({
+      const { error: stockError } = await sb.from('sales_stock').upsert({
         sales_id: sourceId,
         product_id: productId,
         quantity: avail - qty
       }, { onConflict: 'sales_id,product_id' });
+      if (stockError) throw stockError;
     } else {
-      await sb.from('warehouse_stock').upsert({
+      const { error: stockError } = await sb.from('warehouse_stock').upsert({
         warehouse_id: sourceId,
         product_id: productId,
         quantity: avail - qty
       }, { onConflict: 'warehouse_id,product_id' });
+      if (stockError) throw stockError;
     }
 
     await loadData();
@@ -1046,13 +1053,14 @@ async function resolveReplacement(returId) {
 
   try {
     // 1. Update retur status
-    await sb.from('retur_items').update({
+    const { error: returUpdError } = await sb.from('retur_items').update({
       status: 'selesai_diganti',
       resolved_date: new Date().toISOString()
     }).eq('id', returId);
+    if (returUpdError) throw returUpdError;
 
     // 2. Insert transaction
-    await sb.from('transactions').insert({
+    const { error: txError } = await sb.from('transactions').insert({
       id: uid('trx'),
       type: 'penggantian_masuk',
       date: new Date().toISOString(),
@@ -1061,14 +1069,16 @@ async function resolveReplacement(returId) {
       qty: item.qty,
       note: "Penggantian dari principal diterima"
     });
+    if (txError) throw txError;
 
     // 3. Increase pusat stock
     const pusatQty = state.data.stock.pusat?.[item.productId] || 0;
-    await sb.from('warehouse_stock').upsert({
+    const { error: stockError } = await sb.from('warehouse_stock').upsert({
       warehouse_id: 'pusat',
       product_id: item.productId,
       quantity: pusatQty + item.qty
     }, { onConflict: 'warehouse_id,product_id' });
+    if (stockError) throw stockError;
 
     await loadData();
     render();
@@ -1086,7 +1096,7 @@ async function applySalesUpload() {
   try {
     for (const r of rows) {
       // 1. Insert transaction
-      await sb.from('transactions').insert({
+      const { error: txError } = await sb.from('transactions').insert({
         id: uid('trx'),
         type: 'penjualan',
         date: new Date().toISOString(),
@@ -1095,14 +1105,16 @@ async function applySalesUpload() {
         qty: r.qty,
         note: "Upload data penjualan"
       });
+      if (txError) throw txError;
 
       // 2. Decrease sales stock
       const currentQty = state.data.salesStock[r.salesId]?.[r.productId] || 0;
-      await sb.from('sales_stock').upsert({
+      const { error: stockError } = await sb.from('sales_stock').upsert({
         sales_id: r.salesId,
         product_id: r.productId,
         quantity: currentQty - r.qty
       }, { onConflict: 'sales_id,product_id' });
+      if (stockError) throw stockError;
     }
 
     state.ui.uploadRows = [];
@@ -1128,7 +1140,7 @@ async function applyCatalogImport() {
 
       if (existing) {
         // Update existing product
-        await sb.from('products').update({
+        const { error: updError } = await sb.from('products').update({
           name: r.name,
           category: r.category,
           brand: r.brand,
@@ -1137,10 +1149,11 @@ async function applyCatalogImport() {
           cluster: r.cluster,
           price: r.price
         }).eq('id', r.id);
+        if (updError) throw updError;
         updated++;
       } else {
         // Insert new product
-        await sb.from('products').insert({
+        const { error: prodInsError } = await sb.from('products').insert({
           id: r.id,
           name: r.name,
           category: r.category,
@@ -1150,23 +1163,26 @@ async function applyCatalogImport() {
           cluster: r.cluster,
           price: r.price
         });
+        if (prodInsError) throw prodInsError;
 
         // Initialize stock for all warehouses
         for (const w of state.data.warehouses) {
-          await sb.from('warehouse_stock').insert({
+          const { error: wsError } = await sb.from('warehouse_stock').insert({
             warehouse_id: w.id,
             product_id: r.id,
             quantity: 0
           });
+          if (wsError) throw wsError;
         }
 
         // Initialize stock for all sales
         for (const s of state.data.salesTeam) {
-          await sb.from('sales_stock').insert({
+          const { error: ssError } = await sb.from('sales_stock').insert({
             sales_id: s.id,
             product_id: r.id,
             quantity: 0
           });
+          if (ssError) throw ssError;
         }
 
         added++;
@@ -1179,10 +1195,11 @@ async function applyCatalogImport() {
       const pusat = state.data.warehouses.find(w => w.id === "pusat");
       const newName = "Gudang Pusat - " + importedCluster;
       if (pusat && pusat.name !== newName) {
-        await sb.from('warehouses').update({
+        const { error: whUpdError } = await sb.from('warehouses').update({
           name: newName,
           kota: importedCluster
         }).eq('id', 'pusat');
+        if (whUpdError) throw whUpdError;
       }
     }
 
@@ -1292,14 +1309,15 @@ async function applyStockImport() {
   try {
     for (const r of rows) {
       // 1. Upsert stock
-      await sb.from('warehouse_stock').upsert({
+      const { error: stockError } = await sb.from('warehouse_stock').upsert({
         warehouse_id: r.warehouseId,
         product_id: r.productId,
         quantity: r.qty
       }, { onConflict: 'warehouse_id,product_id' });
+      if (stockError) throw stockError;
 
       // 2. Insert transaction
-      await sb.from('transactions').insert({
+      const { error: txError } = await sb.from('transactions').insert({
         id: uid('trx'),
         type: 'stok_awal',
         date: new Date().toISOString(),
@@ -1308,6 +1326,7 @@ async function applyStockImport() {
         qty: r.qty,
         note: "Update stok awal via import (" + r.warehouseName + ")"
       });
+      if (txError) throw txError;
     }
 
     state.ui.stockImportRows = [];
@@ -1389,28 +1408,31 @@ async function applySalesImport() {
 
       if (existing) {
         // Update existing sales
-        await sb.from('sales_team').update({
+        const { error: updError } = await sb.from('sales_team').update({
           name: r.name,
           gudang: r.gudang,
           supervisor: r.supervisor
         }).eq('id', existing.id);
+        if (updError) throw updError;
         updated++;
       } else {
         // Insert new sales
-        await sb.from('sales_team').insert({
+        const { error: insError } = await sb.from('sales_team').insert({
           id: r.id,
           name: r.name,
           gudang: r.gudang,
           supervisor: r.supervisor
         });
+        if (insError) throw insError;
 
         // Initialize stock for all products
         for (const p of state.data.products) {
-          await sb.from('sales_stock').insert({
+          const { error: ssError } = await sb.from('sales_stock').insert({
             sales_id: r.id,
             product_id: p.id,
             quantity: 0
           });
+          if (ssError) throw ssError;
         }
 
         added++;
@@ -1485,8 +1507,7 @@ async function addUser(username, password, name, role, cabangId, gudangPusat) {
     return notify("Pilih gudang cabang untuk akun ini", "error");
 
   try {
-    await sb.from('users').insert({
-      id: uid("user"),
+    const { error: userInsertError } = await sb.from('users').insert({
       username: username,
       password: password,
       name: name,
@@ -1494,6 +1515,7 @@ async function addUser(username, password, name, role, cabangId, gudangPusat) {
       cabang_id: role === "admin_cabang" ? cabangId : null,
       gudang_pusat: role === "admin_pusat" ? (gudangPusat || null) : null
     });
+    if (userInsertError) throw userInsertError;
 
     await loadData();
     render();
