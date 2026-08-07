@@ -293,7 +293,7 @@ async function loadUsers() {
     name: u.name,
     role: u.role,
     cabangId: u.cabang_id,
-    gudangPusat: u.gudang_pusat
+    gudangPusat: u.gudang_pusat_id
   }));
 }
 
@@ -1513,7 +1513,7 @@ async function addUser(username, password, name, role, cabangId, gudangPusat) {
       name: name,
       role: role,
       cabang_id: role === "admin_cabang" ? cabangId : null,
-      gudang_pusat: role === "admin_pusat" ? (gudangPusat || null) : null
+      gudang_pusat_id: role === "admin_pusat" ? (gudangPusat || null) : null
     });
     if (userInsertError) throw userInsertError;
 
