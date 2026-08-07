@@ -188,7 +188,8 @@ async function loadWarehouses() {
     id: w.id,
     name: w.name,
     type: w.type,
-    kota: w.kota
+    kota: w.kota,
+    cluster: w.cluster
   }));
 }
 
@@ -399,7 +400,7 @@ function categoryLabel(cat) {
   if (k === "PV") return "Voucher";
   return cat || "-";
 }
-function uniqueBrands() { return Array.from(new Set(state.data.products.map(p => p.brand))); }
+function uniqueBrands() { return Array.from(new Set(myClusterProducts().map(p => p.brand))); }
 
 // ---------------- seed data ----------------
 
@@ -898,10 +899,13 @@ async function deleteSalesPerson(id) {
   }
 }
 
-async function addCabang(name, kota) {
+async function addCabang(name, kota, cluster) {
   // 1. Validate name (required)
   if (!name || !name.trim()) {
     return notify("Nama gudang cabang wajib diisi", "error");
+  }
+  if (!cluster) {
+    return notify("Pilih cluster untuk gudang cabang ini", "error");
   }
 
   try {
@@ -913,7 +917,8 @@ async function addCabang(name, kota) {
       id: id,
       name: name.trim(),
       type: 'cabang',
-      kota: kota || "-"
+      kota: kota || "-",
+      cluster: cluster
     });
     if (whError) throw whError;
 
@@ -936,6 +941,43 @@ async function addCabang(name, kota) {
   } catch (e) {
     console.error('addCabang error:', e);
     notify("Gagal menambahkan cabang: " + (e.message || e), "error");
+  }
+}
+
+async function addPusat(cluster) {
+  if (!cluster || !cluster.trim()) {
+    return notify("Pilih cluster untuk gudang pusat baru", "error");
+  }
+  if (state.data.warehouses.find(w => w.type === "pusat" && w.kota === cluster)) {
+    return notify("Gudang pusat untuk cluster ini sudah ada", "error");
+  }
+
+  try {
+    const id = uid("pusat");
+    const { error: whError } = await sb.from('warehouses').insert({
+      id: id,
+      name: "Gudang Pusat - " + cluster,
+      type: 'pusat',
+      kota: cluster
+    });
+    if (whError) throw whError;
+
+    const stockInserts = state.data.products.map(p => ({
+      warehouse_id: id,
+      product_id: p.id,
+      quantity: 0
+    }));
+    const { error: stockError } = await sb.from('warehouse_stock').insert(stockInserts);
+    if (stockError) throw stockError;
+
+    state.ui.pusatSelected = id;
+
+    await loadData();
+    render();
+    notify("Gudang Pusat - " + cluster + " berhasil ditambahkan");
+  } catch (e) {
+    console.error('addPusat error:', e);
+    notify("Gagal menambahkan gudang pusat: " + (e.message || e), "error");
   }
 }
 
@@ -1393,6 +1435,24 @@ function isPusatAdmin() { return state.session && state.session.role === "admin_
 function isCabangAdmin() { return state.session && state.session.role === "admin_cabang"; }
 function isPusatOrHQ() { return isPusatAdmin() || isHQ(); }
 function myCabangId() { return state.session ? state.session.cabangId : ""; }
+function myGudangPusatId() { return state.session ? state.session.gudangPusat : ""; }
+function myCluster() {
+  if (isPusatAdmin()) {
+    const wh = state.data.warehouses.find(w => w.id === myGudangPusatId());
+    return wh ? wh.kota : null;
+  }
+  if (isCabangAdmin()) {
+    const wh = state.data.warehouses.find(w => w.id === myCabangId());
+    return wh ? wh.cluster : null;
+  }
+  return null;
+}
+function myClusterProducts() {
+  if (!isPusatAdmin() && !isCabangAdmin()) return state.data.products;
+  const cluster = myCluster();
+  if (!cluster) return [];
+  return state.data.products.filter(p => p.cluster === cluster);
+}
 
 async function doLogin() {
   const username = (document.getElementById("login-username")||{}).value || "";
@@ -1503,7 +1563,7 @@ function productOptions(selected) {
   let html = "";
   uniqueBrands().forEach(brand => {
     html += '<optgroup label="' + esc(brandLabel(brand)) + '">';
-    state.data.products.filter(p=>p.brand===brand).forEach(p => {
+    myClusterProducts().filter(p=>p.brand===brand).forEach(p => {
       html += '<option value="' + p.id + '"' + (p.id===selected ? " selected" : "") + '>' + esc(p.name) + ' (' + nfmt(p.price) + ')</option>';
     });
     html += '</optgroup>';
@@ -1681,21 +1741,38 @@ function renderDashboard() {
 }
 
 function renderGudangPusat() {
-  const total = Object.values(state.data.stock.pusat).reduce((a,b)=>a+b,0);
-  const pusatWarehouse = state.data.warehouses.find(w=>w.id==="pusat");
+  let pusatList = state.data.warehouses.filter(w=>w.type==="pusat");
+  if (isPusatAdmin()) pusatList = pusatList.filter(w=>w.id===myGudangPusatId());
+  if ((!state.ui.pusatSelected || !pusatList.find(c=>c.id===state.ui.pusatSelected)) && pusatList[0]) state.ui.pusatSelected = pusatList[0].id;
+  const selected = state.ui.pusatSelected;
+  const total = selected ? Object.values(state.data.stock[selected]||{}).reduce((a,b)=>a+b,0) : 0;
+  const pusatWarehouse = state.data.warehouses.find(w=>w.id===selected);
   const importRows = state.ui.stockImportRows;
   const okCount = importRows.filter(r=>r.status==="ok").length;
   const errCount = importRows.filter(r=>r.status==="error").length;
+  const availableClusters = GUDANG_PUSAT_LIST.filter(g=>!state.data.warehouses.find(w=>w.type==="pusat"&&w.kota===g));
 
   return '<div class="stack">' +
-    '<div class="grid grid-3">' + statCard("Total unit di gudang pusat", nfmt(total), "indigo", pusatWarehouse ? pusatWarehouse.kota : "") + '</div>' +
+    '<div class="row">' +
+      '<select class="input" id="pusat-select" onchange="onPusatSelect(this.value)"' + (isPusatAdmin()?" disabled":"") + '>' + pusatList.map(c=>'<option value="'+c.id+'"'+(c.id===selected?" selected":"")+'>'+esc(c.name)+'</option>').join("") + '</select>' +
+      (isHQ() ? '<button class="btn btn-ghost" onclick="toggleAddPusat()">+ Tambah gudang pusat</button>' : '') +
+    '</div>' +
+    '<div id="add-pusat-box" style="display:none">' +
+      '<div class="section"><div class="section-head"><h3>Gudang pusat baru</h3></div>' +
+        '<div class="row" style="align-items:flex-end">' +
+          '<label class="field"><span>Cluster</span><select class="input" id="pusat-cluster-select"><option value="">Pilih cluster</option>' + availableClusters.map(g=>'<option value="'+esc(g)+'">'+esc(g)+'</option>').join("") + '</select></label>' +
+          '<button class="btn btn-primary" onclick="onAddPusat()">Simpan</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="grid grid-3">' + statCard("Total unit di gudang pusat ini", nfmt(total), "indigo", pusatWarehouse ? pusatWarehouse.kota : "") + '</div>' +
     '<div class="section"><div class="section-head"><h3>Import &amp; export stok awal</h3>' +
       '<div class="row">' +
         '<button class="btn btn-ghost" onclick="downloadStockTemplate()">&#8681; Download template</button>' +
         '<button class="btn btn-ghost" onclick="exportStockData()">&#8681; Export data stok saat ini</button>' +
       '</div>' +
     '</div>' +
-      '<p class="muted" style="font-size:13px;color:#64748b">Unggah file <code class="inline">.xlsx</code> atau <code class="inline">.csv</code> dengan kolom <code class="inline">Product ID</code>, <code class="inline">Stok Awal</code>, dan <code class="inline">Keterangan</code> (nama gudang tujuan, mis. nama Gudang Pusat atau nama gudang cabang seperti <code class="inline">BO Magelang</code>). Nilai stok pada baris yang cocok akan menggantikan (bukan menambah) stok gudang yang bersangkutan. Stok gudang pusat akan berkurang secara otomatis setiap kali barang dikirim ke gudang cabang atau didistribusikan ke tim sales.</p>' +
+      '<p class="muted" style="font-size:13px;color:#64748b">Unggah file <code class="inline">.xlsx</code> atau <code class="inline">.csv</code> dengan kolom <code class="inline">Product ID</code>, <code class="inline">Stok Awal</code>, dan <code class="inline">Keterangan</code> (nama gudang tujuan, mis. nama Gudang Pusat atau nama gudang cabang). Nilai stok pada baris yang cocok akan menggantikan (bukan menambah) stok gudang yang bersangkutan. Stok gudang pusat akan berkurang secara otomatis setiap kali barang dikirim ke gudang cabang atau didistribusikan ke tim sales.</p>' +
       '<div class="row"><input type="file" accept=".csv,.xlsx,.xls" onchange="handleStockImportFile(this)">' + (state.ui.stockImportFileName ? '<span class="muted">'+esc(state.ui.stockImportFileName)+'</span>' : '') + '</div>' +
       (importRows.length ? (
         '<div style="margin-top:14px"><div class="section-head"><h3 style="font-size:13px">Preview (' + okCount + '/' + importRows.length + ' baris siap' + (errCount ? ", " + errCount + " bermasalah" : "") + ')</h3>' +
@@ -1708,23 +1785,29 @@ function renderGudangPusat() {
       ) : "") +
     '</div>' +
     '<div class="grid grid-2-1">' +
-      '<div class="section"><div class="section-head"><h3>Stok per produk - Gudang Pusat</h3></div>' + productStockTable("pusat") + '</div>' +
+      '<div class="section"><div class="section-head"><h3>Stok per produk</h3></div>' + (selected ? productStockTable(selected) : '<p class="muted">Belum ada gudang pusat.</p>') + '</div>' +
       '<div class="section"><div class="section-head"><h3>Catat barang masuk</h3></div>' +
         '<div class="stack" style="gap:12px">' +
           '<label class="field"><span>Produk</span><select class="input" id="pusat-produk"><option value="">Pilih produk</option>' + productOptions("") + '</select></label>' +
           '<label class="field"><span>Jumlah</span><input class="input" type="number" min="1" id="pusat-qty" placeholder="Jumlah unit"></label>' +
           '<label class="field"><span>Catatan (opsional)</span><input class="input" id="pusat-note" placeholder="mis. restock dari principal"></label>' +
-          '<button class="btn btn-primary" onclick="onStockIn()">+ Tambah stok masuk</button>' +
+          '<button class="btn btn-primary" ' + (selected?"":"disabled") + ' onclick="onStockIn()">+ Tambah stok masuk</button>' +
         '</div>' +
       '</div>' +
     '</div>' +
   '</div>';
 }
+function onPusatSelect(id) { state.ui.pusatSelected = id; render(); }
+function toggleAddPusat() { const box = document.getElementById("add-pusat-box"); box.style.display = box.style.display==="none" ? "block" : "none"; }
+function onAddPusat() {
+  const cluster = document.getElementById("pusat-cluster-select").value;
+  addPusat(cluster);
+}
 function onStockIn() {
   const productId = document.getElementById("pusat-produk").value;
   const qty = Number(document.getElementById("pusat-qty").value);
   const note = document.getElementById("pusat-note").value;
-  stockIn("pusat", productId, qty, note);
+  stockIn(state.ui.pusatSelected, productId, qty, note);
 }
 
 function renderGudangCabang() {
@@ -1745,15 +1828,21 @@ function renderGudangCabang() {
         '<div class="row" style="align-items:flex-end">' +
           '<label class="field"><span>Nama gudang</span><input class="input" id="cabang-nama" placeholder="mis. Gudang Cabang Medan"></label>' +
           '<label class="field"><span>Kota</span><input class="input" id="cabang-kota" placeholder="Kota"></label>' +
+          '<label class="field"><span>Cluster</span><select class="input" id="cabang-cluster"><option value="">Pilih cluster</option>' + GUDANG_PUSAT_LIST.map(g=>'<option value="'+esc(g)+'">'+esc(g)+'</option>').join("") + '</select></label>' +
           '<button class="btn btn-primary" onclick="onAddCabang()">Simpan</button>' +
         '</div>' +
       '</div>' +
     '</div>' +
-    '<div class="grid grid-3">' + statCard("Total unit di cabang ini", nfmt(total), "blue", selWarehouse ? selWarehouse.kota : "") + '</div>' +
+    '<div class="grid grid-3">' + statCard("Total unit di cabang ini", nfmt(total), "blue", selWarehouse ? (selWarehouse.kota + (selWarehouse.cluster ? " \u00b7 " + selWarehouse.cluster : "")) : "") + '</div>' +
     '<div class="grid grid-2-1">' +
       '<div class="section"><div class="section-head"><h3>Stok per produk</h3></div>' + (selected ? productStockTable(selected) : '<p class="muted">Belum ada gudang cabang.</p>') + '</div>' +
       '<div class="section"><div class="section-head"><h3>Transfer dari Gudang Pusat</h3></div>' +
         '<div class="stack" style="gap:12px">' +
+          '<label class="field"><span>Dari Gudang Pusat</span><select class="input" id="cabang-pusat-asal" onchange="renderAvailPusat()">' + (function(){
+            let pusatOptions = state.data.warehouses.filter(w=>w.type==="pusat");
+            if (isPusatAdmin()) pusatOptions = pusatOptions.filter(w=>w.id===myGudangPusatId());
+            return pusatOptions.map(w=>'<option value="'+w.id+'">'+esc(w.name)+'</option>').join("");
+          })() + '</select></label>' +
           '<label class="field"><span>Produk</span><select class="input" id="cabang-produk" onchange="renderAvailPusat()"><option value="">Pilih produk</option>' + productOptions("") + '</select></label>' +
           '<label class="field"><span>Jumlah</span><input class="input" type="number" min="1" id="cabang-qty" placeholder="Jumlah unit"></label>' +
           '<div class="muted" id="cabang-avail">Stok pusat tersedia: 0</div>' +
@@ -1768,22 +1857,30 @@ function toggleAddCabang() { const box = document.getElementById("add-cabang-box
 function onAddCabang() {
   const name = document.getElementById("cabang-nama").value;
   const kota = document.getElementById("cabang-kota").value;
-  addCabang(name, kota);
+  const cluster = document.getElementById("cabang-cluster").value;
+  addCabang(name, kota, cluster);
 }
 function renderAvailPusat() {
+  const pusatEl = document.getElementById("cabang-pusat-asal");
+  const pusatId = pusatEl ? pusatEl.value : "";
   const productId = document.getElementById("cabang-produk").value;
-  const avail = state.data.stock.pusat[productId] || 0;
+  const avail = (state.data.stock[pusatId]||{})[productId] || 0;
   document.getElementById("cabang-avail").textContent = "Stok pusat tersedia: " + nfmt(avail);
 }
 function onTransferCabang() {
+  const pusatId = document.getElementById("cabang-pusat-asal").value;
   const productId = document.getElementById("cabang-produk").value;
   const qty = Number(document.getElementById("cabang-qty").value);
-  transferWarehouse("pusat", state.ui.cabangSelected, productId, qty);
+  transferWarehouse(pusatId, state.ui.cabangSelected, productId, qty);
 }
 
 function renderDistribusi() {
-  const salesList = isCabangAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myCabangId()) : state.data.salesTeam;
-  const warehouseOptions = isCabangAdmin() ? state.data.warehouses.filter(w=>w.id===myCabangId()) : state.data.warehouses;
+  const salesList = isCabangAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myCabangId())
+    : isPusatAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myGudangPusatId())
+    : state.data.salesTeam;
+  const warehouseOptions = isCabangAdmin() ? state.data.warehouses.filter(w=>w.id===myCabangId())
+    : isPusatAdmin() ? state.data.warehouses.filter(w=>w.id===myGudangPusatId())
+    : state.data.warehouses;
   return '<div class="grid grid-2-1">' +
     '<div class="section"><div class="section-head"><h3>Stok saat ini di tim sales</h3></div>' +
       (salesList.length ? (
@@ -1823,14 +1920,18 @@ function onDistribusi() {
 }
 
 function renderStokSales() {
-  const myTeam = isCabangAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myCabangId()) : state.data.salesTeam;
+  const myTeam = isCabangAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myCabangId())
+    : isPusatAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myGudangPusatId())
+    : state.data.salesTeam;
   if (state.ui.salesSelectedStok && !myTeam.find(s=>s.id===state.ui.salesSelectedStok)) state.ui.salesSelectedStok = "";
   if (!state.ui.salesSelectedStok && myTeam[0]) state.ui.salesSelectedStok = myTeam[0].id;
   const salesId = state.ui.salesSelectedStok;
   const salesInfo = myTeam.find(s=>s.id===salesId);
   const stock = state.data.salesStock[salesId] || {};
   const total = Object.values(stock).reduce((a,b)=>a+b,0);
-  const gudangOptions = isCabangAdmin() ? state.data.warehouses.filter(w=>w.id===myCabangId()) : state.data.warehouses;
+  const gudangOptions = isCabangAdmin() ? state.data.warehouses.filter(w=>w.id===myCabangId())
+    : isPusatAdmin() ? state.data.warehouses.filter(w=>w.id===myGudangPusatId())
+    : state.data.warehouses;
 
   const addForm = '<div id="add-sales-box" style="display:none"><div class="section"><div class="section-head"><h3>Tambah anggota tim sales</h3></div>' +
       '<div class="row" style="align-items:flex-end">' +
@@ -2069,18 +2170,20 @@ function renderKatalogBarang() {
   const errCount = rows.filter(r=>r.status==="error").length;
   const okCount = newCount + updCount;
 
+  const scopedProducts = myClusterProducts();
   const brands = uniqueBrands();
-  const categories = Array.from(new Set(state.data.products.map(p=>p.category)));
+  const categories = Array.from(new Set(scopedProducts.map(p=>p.category)));
   const search = normKey(state.ui.catalogSearch);
-  const filtered = state.data.products.filter(p =>
+  const filtered = scopedProducts.filter(p =>
     (!search || normKey(p.name).includes(search) || normKey(p.id).includes(search)) &&
     (!state.ui.catalogBrandFilter || p.brand === state.ui.catalogBrandFilter) &&
     (!state.ui.catalogCategoryFilter || p.category === state.ui.catalogCategoryFilter)
   );
 
   let html = '<div class="stack">' +
+    ((isPusatAdmin()||isCabangAdmin()) ? '<div class="pill-warning" style="display:inline-flex;margin-bottom:4px">Menampilkan katalog untuk cluster ' + esc(myCluster() || "-") + ' saja</div>' : '') +
     '<div class="grid grid-3">' +
-      statCard("Total produk di katalog", nfmt(state.data.products.length), "indigo") +
+      statCard((isPusatAdmin()||isCabangAdmin()) ? "Total produk cluster Anda" : "Total produk di katalog", nfmt(scopedProducts.length), "indigo") +
       statCard("Jumlah brand", brands.length, "slate") +
       statCard("Jumlah gudang cabang", state.data.warehouses.filter(w=>w.type==="cabang").length, "blue") +
     '</div>' +
@@ -2200,7 +2303,7 @@ function renderKelolaPengguna() {
           (isHQ() ? '<option value="hq">Head Quarter</option>' : '') +
           '<option value="admin_pusat">Admin Pusat</option><option value="admin_cabang" selected>Admin Cabang</option></select></label>' +
         '<label class="field" id="user-cabang-field"><span>Gudang Cabang</span><select class="input" id="user-cabang">' + cabangList.map(w=>'<option value="'+w.id+'">'+esc(w.name)+'</option>').join("") + '</select></label>' +
-        (isHQ() ? '<label class="field" id="user-gudang-pusat-field" style="display:none"><span>Gudang Pusat</span><select class="input" id="user-gudang-pusat"><option value="">Pilih gudang pusat</option>' + GUDANG_PUSAT_LIST.map(g=>'<option value="'+esc(g)+'">'+esc(g)+'</option>').join("") + '</select></label>' : '') +
+        (isHQ() ? '<label class="field" id="user-gudang-pusat-field" style="display:none"><span>Gudang Pusat</span><select class="input" id="user-gudang-pusat"><option value="">Pilih gudang pusat</option>' + state.data.warehouses.filter(w=>w.type==="pusat").map(w=>'<option value="'+w.id+'">'+esc(w.name)+'</option>').join("") + '</select></label>' : '') +
         '<button class="btn btn-primary" onclick="onAddUser()">Simpan</button>' +
       '</div>' +
     '</div>' +
@@ -2209,7 +2312,7 @@ function renderKelolaPengguna() {
       return '<div class="section"><div class="section-head"><h3>Daftar akun (' + visibleUsers.length + ')</h3></div>' +
       '<table class="tbl"><thead><tr><th>Username</th><th>Nama</th><th>Role</th><th>Gudang</th><th></th></tr></thead><tbody>' +
       visibleUsers.map(u => {
-        const gudangName = u.role==="hq" ? "Nasional" : u.role==="admin_pusat" ? (u.gudangPusat || "Semua gudang") : u.cabangId ? (state.data.warehouses.find(w=>w.id===u.cabangId)||{}).name || "-" : "Semua gudang";
+        const gudangName = u.role==="hq" ? "Nasional" : u.role==="admin_pusat" ? (u.gudangPusat ? (state.data.warehouses.find(w=>w.id===u.gudangPusat)||{}).name || "-" : "Semua gudang") : u.cabangId ? (state.data.warehouses.find(w=>w.id===u.cabangId)||{}).name || "-" : "Semua gudang";
         const roleBadge = u.role==="hq" ? '<span class="badge badge-hq">Head Quarter</span>' : u.role==="admin_pusat" ? '<span class="badge badge-transfer">Admin Pusat</span>' : '<span class="badge badge-distribusi">Admin Cabang</span>';
         return '<tr><td class="muted">'+esc(u.username)+'</td><td>'+esc(u.name)+'</td><td>' + roleBadge + '</td><td class="muted">'+esc(gudangName)+'</td><td><button class="btn btn-ghost" style="color:#be123c;border-color:#fecdd3;padding:4px 10px" onclick="deleteUser(\''+u.id+'\')">Hapus</button></td></tr>';
       }).join("") +
@@ -2309,7 +2412,9 @@ function renderSidebar() {
 }
 function renderTopbar() {
   const pending = state.data.returItems.filter(r=>r.status==="menunggu_penggantian").length;
-  const roleLabel = isHQ() ? "Head Quarter" : isPusatAdmin() ? "Admin Pusat" : "Admin Cabang" + (myCabangId() ? " \u2013 " + esc((state.data.warehouses.find(w=>w.id===myCabangId())||{}).name||"") : "");
+  const roleLabel = isHQ() ? "Head Quarter" :
+    isPusatAdmin() ? "Admin Pusat" + (myGudangPusatId() ? " \u2013 " + esc((state.data.warehouses.find(w=>w.id===myGudangPusatId())||{}).name||"") : "") :
+    "Admin Cabang" + (myCabangId() ? " \u2013 " + esc((state.data.warehouses.find(w=>w.id===myCabangId())||{}).name||"") : "");
   return '<div class="topbar"><div class="topbar-date">' + new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"}) + '</div>' +
     '<div class="row" style="gap:14px">' +
     (pending>0 ? '<span class="pill-warning">&#9888; ' + pending + ' item menunggu penggantian principal</span>' : '') +
