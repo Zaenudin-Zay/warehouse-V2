@@ -1627,6 +1627,23 @@ function myClusterProducts() {
   if (!cluster) return [];
   return state.data.products.filter(p => p.cluster === cluster);
 }
+function warehouseCluster(wh) {
+  if (!wh) return null;
+  return wh.type === "pusat" ? wh.kota : wh.cluster;
+}
+function locationCluster(id) {
+  const wh = state.data.warehouses.find(w => w.id === id);
+  if (wh) return warehouseCluster(wh);
+  const sales = state.data.salesTeam.find(s => s.id === id);
+  if (sales) return warehouseCluster(state.data.warehouses.find(w => w.id === sales.gudang));
+  return null;
+}
+function userCluster(u) {
+  if (u.role === "hq") return null;
+  if (u.role === "admin_pusat") return warehouseCluster(state.data.warehouses.find(w => w.id === u.gudangPusat));
+  if (u.role === "admin_cabang") return warehouseCluster(state.data.warehouses.find(w => w.id === u.cabangId));
+  return null;
+}
 
 async function doLogin() {
   const username = (document.getElementById("login-username")||{}).value || "";
@@ -1657,6 +1674,11 @@ async function addUser(username, password, name, role, cabangId, gudangPusat) {
     return notify("Username \"" + username + "\" sudah dipakai", "error");
   if (role === "admin_cabang" && !cabangId)
     return notify("Pilih gudang cabang untuk akun ini", "error");
+  if (role === "admin_cabang" && isPusatAdmin()) {
+    const wh = state.data.warehouses.find(w => w.id === cabangId);
+    if (!wh || wh.cluster !== myCluster())
+      return notify("Anda hanya bisa menambahkan akun untuk gudang cabang di cluster Anda sendiri", "error");
+  }
 
   try {
     const { error: userInsertError } = await sb.from('users').insert({
@@ -1665,7 +1687,7 @@ async function addUser(username, password, name, role, cabangId, gudangPusat) {
       name: name,
       role: role,
       cabang_id: role === "admin_cabang" ? cabangId : null,
-      gudang_pusat_id: role === "admin_pusat" ? (gudangPusat || null) : null
+      gudang_pusat_id: role === "admin_pusat" ? (gudangPusat || (isPusatAdmin() ? myGudangPusatId() : null)) : null
     });
     if (userInsertError) throw userInsertError;
 
@@ -2415,9 +2437,13 @@ function renderKatalogBarang() {
 
 function renderStatusBarang() {
   const sourceType = state.ui.statusSourceType;
-  const locationOptions = sourceType === "sales" ? state.data.salesTeam : state.data.warehouses;
-  const pending = state.data.returItems.filter(r=>r.status==="menunggu_penggantian");
-  const resolved = state.data.returItems.filter(r=>r.status==="selesai_diganti");
+  const scoped = isPusatAdmin() || isCabangAdmin();
+  const locationOptions = sourceType === "sales"
+    ? (scoped ? state.data.salesTeam.filter(s => locationCluster(s.id) === myCluster()) : state.data.salesTeam)
+    : (scoped ? state.data.warehouses.filter(w => locationCluster(w.id) === myCluster()) : state.data.warehouses);
+  const returItems = scoped ? state.data.returItems.filter(r => locationCluster(r.sourceId) === myCluster()) : state.data.returItems;
+  const pending = returItems.filter(r=>r.status==="menunggu_penggantian");
+  const resolved = returItems.filter(r=>r.status==="selesai_diganti");
 
   return '<div class="stack">' +
     '<div class="grid grid-3">' +
@@ -2486,7 +2512,9 @@ function renderLogin() {
 }
 
 function renderKelolaPengguna() {
-  const cabangList = state.data.warehouses.filter(w=>w.type==="cabang");
+  const cabangList = isPusatAdmin()
+    ? state.data.warehouses.filter(w=>w.type==="cabang" && w.cluster===myCluster())
+    : state.data.warehouses.filter(w=>w.type==="cabang");
   return '<div class="stack">' +
     '<div class="section"><div class="section-head"><h3>Tambah akun pengguna</h3></div>' +
       '<div class="row" style="align-items:flex-end">' +
@@ -2502,7 +2530,7 @@ function renderKelolaPengguna() {
       '</div>' +
     '</div>' +
     (function(){
-      const visibleUsers = isHQ() ? state.data.users : state.data.users.filter(u=>u.role!=="hq");
+      const visibleUsers = isHQ() ? state.data.users : state.data.users.filter(u=>u.role!=="hq" && userCluster(u)===myCluster());
       return '<div class="section"><div class="section-head"><h3>Daftar akun (' + visibleUsers.length + ')</h3></div>' +
       '<table class="tbl"><thead><tr><th>Username</th><th>Nama</th><th>Role</th><th>Gudang</th><th></th></tr></thead><tbody>' +
       visibleUsers.map(u => {
