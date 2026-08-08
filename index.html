@@ -581,6 +581,7 @@ const state = {
     catalogRows: [], catalogFileName: "", catalogSearch: "", catalogBrandFilter: "", catalogCategoryFilter: "",
     stockImportRows: [], stockImportFileName: "",
     salesImportRows: [], salesImportFileName: "",
+    allocationRows: [], allocationFileName: "", allocationGudang: "",
     period: "all", periodFrom: "", periodTo: "",
     loginError: "", userForm: false },
 };
@@ -826,6 +827,139 @@ async function distribusiToSales(warehouseId, salesId, productId, qty) {
     console.error('distribusiToSales error:', e);
     notify("Gagal distribusi: " + (e.message || e), "error");
   }
+}
+
+// ---------------- Input Allocation Log (bulk distribusi ke sales) ----------------
+function downloadAllocationTemplate() {
+  const headers = ["Sales Cluster", "Canvasser ID", "Product ID", "Product Name", "Total"];
+  const rows = [
+    ["JB-Tangerang", "SF-26020911", "2602006161", "SP Smartfren", 4],
+    ["JB-Tangerang", "SF-26045221", "2603000001", "PV Smartfren Reguler", 16],
+  ];
+  downloadCSV("template_allocation_log.csv", headers, rows);
+  notify("Template Input Allocation Log diunduh.");
+}
+function buildAllocationRows(dataRows) {
+  const groups = {};
+  dataRows.forEach(r => {
+    const canvasserId = pickField(r, ["Canvasser ID","canvasser id","sales id","id sales"]).toString().trim();
+    const productId = pickField(r, ["Product ID","product id","kode produk","sku"]).toString().trim();
+    const totalRaw = pickField(r, ["Total","qty","jumlah","total product"]);
+    const qty = parseInt((totalRaw||"0").toString().replace(/[^0-9-]/g,""), 10) || 0;
+    if (!canvasserId && !productId) return;
+    const key = canvasserId + "||" + productId;
+    if (!groups[key]) groups[key] = { canvasserId, productId, qty: 0 };
+    groups[key].qty += qty;
+  });
+
+  const gudangId = state.ui.allocationGudang;
+  const runningStock = {};
+
+  return Object.values(groups).map((g, i) => {
+    const sales = state.data.salesTeam.find(s => s.id === g.canvasserId);
+    const prod = state.data.products.find(p => p.id === g.productId);
+    let status = "ok", issue = "";
+    if (!gudangId) { status = "error"; issue = "Pilih gudang asal dulu"; }
+    else if (!sales) { status = "error"; issue = "Canvasser ID tidak ditemukan di tim sales"; }
+    else if (!prod) { status = "error"; issue = "Product ID tidak ditemukan di katalog"; }
+    else if (!g.qty || g.qty <= 0) { status = "error"; issue = "Jumlah tidak valid"; }
+    else {
+      if (runningStock[g.productId] === undefined) runningStock[g.productId] = state.data.stock[gudangId]?.[g.productId] || 0;
+      if (g.qty > runningStock[g.productId]) { status = "error"; issue = "Stok gudang tidak cukup (sisa " + runningStock[g.productId] + ")"; }
+      else runningStock[g.productId] -= g.qty;
+    }
+    return {
+      key: i, qty: g.qty,
+      salesId: g.canvasserId, salesName: sales ? sales.name : g.canvasserId,
+      productId: g.productId, productName: prod ? prod.name : g.productId,
+      status, issue,
+    };
+  });
+}
+function handleAllocationFile(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  state.ui.allocationFileName = file.name;
+  const ext = file.name.split(".").pop().toLowerCase();
+  if (ext === "csv") {
+    Papa.parse(file, { header: true, skipEmptyLines: true, complete: (results) => {
+      state.ui.allocationRows = buildAllocationRows(results.data);
+      render();
+    }});
+  } else {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      state.ui.allocationRows = buildAllocationRows(rows);
+      render();
+    };
+    reader.readAsArrayBuffer(file);
+  }
+}
+function onAllocationGudangChange(v) {
+  state.ui.allocationGudang = v;
+  if (state.ui.allocationRows.length) state.ui.allocationRows = buildAllocationRows(state.ui.allocationRows.map(r => ({
+    "Canvasser ID": r.salesId, "Product ID": r.productId, "Total": r.qty
+  })));
+  render();
+}
+async function applyAllocationImport() {
+  const gudangId = state.ui.allocationGudang;
+  const rows = state.ui.allocationRows.filter(r => r.status === "ok");
+  if (!gudangId) return notify("Pilih gudang asal dulu", "error");
+  if (!rows.length) return notify("Tidak ada baris valid untuk diproses", "error");
+
+  let applied = 0, failed = 0;
+  const stockDelta = {};
+  const salesDelta = {};
+
+  for (const r of rows) {
+    try {
+      const { error: txError } = await sb.from('transactions').insert({
+        id: uid('trx'),
+        type: 'distribusi',
+        date: new Date().toISOString(),
+        from_location: gudangId,
+        to_location: r.salesId,
+        product_id: r.productId,
+        qty: r.qty,
+        note: 'Input Allocation Log'
+      });
+      if (txError) throw txError;
+
+      if (stockDelta[r.productId] === undefined) stockDelta[r.productId] = state.data.stock[gudangId]?.[r.productId] || 0;
+      stockDelta[r.productId] -= r.qty;
+      const { error: fromError } = await sb.from('warehouse_stock').upsert({
+        warehouse_id: gudangId,
+        product_id: r.productId,
+        quantity: stockDelta[r.productId]
+      }, { onConflict: 'warehouse_id,product_id' });
+      if (fromError) throw fromError;
+
+      const saKey = r.salesId + "||" + r.productId;
+      if (salesDelta[saKey] === undefined) salesDelta[saKey] = state.data.salesStock[r.salesId]?.[r.productId] || 0;
+      salesDelta[saKey] += r.qty;
+      const { error: toError } = await sb.from('sales_stock').upsert({
+        sales_id: r.salesId,
+        product_id: r.productId,
+        qty: salesDelta[saKey]
+      }, { onConflict: 'sales_id,product_id' });
+      if (toError) throw toError;
+
+      applied++;
+    } catch (e) {
+      console.error('applyAllocationImport row error:', e);
+      failed++;
+    }
+  }
+
+  state.ui.allocationRows = [];
+  state.ui.allocationFileName = "";
+  await loadData();
+  render();
+  notify(applied + " baris berhasil didistribusikan" + (failed ? ", " + failed + " gagal" : ""), failed ? "warning" : "success");
 }
 
 async function addSalesPerson(id, name, gudangId, supervisor) {
@@ -1907,6 +2041,9 @@ function renderDistribusi() {
   const warehouseOptions = isCabangAdmin() ? state.data.warehouses.filter(w=>w.id===myCabangId())
     : isPusatAdmin() ? state.data.warehouses.filter(w=>w.id===myGudangPusatId())
     : state.data.warehouses;
+  const allocRows = state.ui.allocationRows;
+  const allocOk = allocRows.filter(r=>r.status==="ok").length;
+  const allocErr = allocRows.filter(r=>r.status==="error").length;
   return '<div class="grid grid-2-1">' +
     '<div class="section"><div class="section-head"><h3>Stok saat ini di tim sales</h3></div>' +
       (salesList.length ? (
@@ -1929,6 +2066,23 @@ function renderDistribusi() {
         '<button class="btn btn-primary" onclick="onDistribusi()">&#128666; Kirim ke sales</button>' +
       '</div>' +
     '</div>' +
+  '</div>' +
+  '<div class="section" style="margin-top:20px"><div class="section-head"><h3>Input Allocation Log</h3>' +
+      '<button class="btn btn-ghost" onclick="downloadAllocationTemplate()">&#8681; Download template</button>' +
+    '</div>' +
+    '<p class="muted" style="font-size:13px;color:#64748b">Upload file export allocation log (<code class="inline">.xlsx</code> atau <code class="inline">.csv</code>) untuk distribusi massal ke banyak sales sekaligus. Kolom <code class="inline">Canvasser ID</code> dipakai sebagai sales tujuan, <code class="inline">Product ID</code> sebagai produk, dan <code class="inline">Total</code> sebagai jumlah. Baris dengan Canvasser ID + Product ID yang sama otomatis dijumlahkan.</p>' +
+    '<div class="row" style="align-items:flex-end;gap:12px">' +
+      '<label class="field"><span>Gudang asal</span><select class="input" id="alloc-gudang" onchange="onAllocationGudangChange(this.value)"><option value="">Pilih gudang</option>' + warehouseOptions.map(w=>'<option value="'+w.id+'"'+(w.id===state.ui.allocationGudang?" selected":"")+'>'+esc(w.name)+'</option>').join("") + '</select></label>' +
+      '<label class="field"><span>File</span><input type="file" accept=".csv,.xlsx,.xls" onchange="handleAllocationFile(this)"></label>' +
+      (state.ui.allocationFileName ? '<span class="muted">'+esc(state.ui.allocationFileName)+'</span>' : '') +
+    '</div>' +
+    (allocRows.length ? (
+      '<div style="margin-top:14px"><div class="section-head"><h3 style="font-size:13px">Preview (' + allocOk + '/' + allocRows.length + ' baris siap' + (allocErr ? ", " + allocErr + " bermasalah" : "") + ')</h3>' +
+        '<button class="btn btn-primary" ' + (allocOk===0?"disabled":"") + ' onclick="applyAllocationImport()">&#10003; Proses ' + allocOk + ' baris</button></div>' +
+        '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Sales</th><th>Produk</th><th class="num">Qty</th><th>Status</th></tr></thead><tbody>' +
+        allocRows.map(r => '<tr><td>'+esc(r.salesName)+' <span class="muted">('+esc(r.salesId)+')</span></td><td>'+esc(r.productName)+'</td><td class="num">'+nfmt(r.qty)+'</td><td>' + (r.status==="ok" ? '<span class="badge badge-ok">&#10003; Siap</span>' : '<span class="badge badge-err">&#9888; '+esc(r.issue)+'</span>') + '</td></tr>').join("") +
+        '</tbody></table></div></div>'
+    ) : "") +
   '</div>';
 }
 function renderDistAvail() {
