@@ -1364,9 +1364,12 @@ function downloadCSV(filename, headers, rows) {
 }
 function downloadStockTemplate() {
   const headers = ["Sales Cluster", "Product ID", "Product Name", "Stok Awal", "Keterangan"];
-  const rows = state.data.products.map(p => [p.cluster || "", p.id, p.name, "", ""]);
+  const scoped = myClusterProducts();
+  const rows = scoped.map(p => [p.cluster || "", p.id, p.name, "", ""]);
   downloadCSV("template_stok_awal.csv", headers, rows);
-  notify("Template stok awal diunduh. Isi kolom Stok Awal & Keterangan (nama gudang tujuan), lalu upload kembali.");
+  notify(scoped.length
+    ? "Template stok awal diunduh. Isi kolom Stok Awal & Keterangan (nama gudang tujuan), lalu upload kembali."
+    : "Template stok awal diunduh (kosong karena belum ada produk di cluster Anda).");
 }
 function downloadCatalogTemplate() {
   const headers = ["Product ID", "Product Name", "Brand", "Category", "Sales Cluster", "Family Paket", "Material Code", "Harga Paket (Rp)"];
@@ -1388,9 +1391,13 @@ function downloadCatalogTemplate() {
 }
 function exportStockData() {
   const headers = ["Sales Cluster", "Product ID", "Product Name", "Stok Awal", "Keterangan"];
+  const scopedWarehouses = isCabangAdmin() ? state.data.warehouses.filter(w=>w.id===myCabangId())
+    : isPusatAdmin() ? state.data.warehouses.filter(w=>w.id===myGudangPusatId())
+    : state.data.warehouses;
+  const scopedProducts = myClusterProducts();
   const rows = [];
-  state.data.warehouses.forEach(w => {
-    state.data.products.forEach(p => {
+  scopedWarehouses.forEach(w => {
+    scopedProducts.forEach(p => {
       rows.push([p.cluster || "", p.id, p.name, state.data.stock[w.id]?.[p.id] || 0, w.name]);
     });
   });
@@ -1398,6 +1405,12 @@ function exportStockData() {
   notify("Data stok saat ini berhasil diunduh");
 }
 function matchWarehouseByLabel(label) {
+  // Admin yang sudah terikat ke satu gudang (pusat/cabang) selalu diarahkan
+  // ke gudangnya sendiri, apa pun teks di kolom Keterangan - supaya tidak
+  // bisa "nyasar" menulis stok ke gudang pusat/cabang milik cluster lain.
+  if (isPusatAdmin()) return state.data.warehouses.find(w => w.id === myGudangPusatId()) || null;
+  if (isCabangAdmin()) return state.data.warehouses.find(w => w.id === myCabangId()) || null;
+
   const n = normalize(label);
   if (!n) return null;
   if (n.includes("pusat")) return state.data.warehouses.find(w => w.type === "pusat") || null;
@@ -1414,6 +1427,7 @@ function buildStockImportRows(dataRows) {
     const wh = matchWarehouseByLabel(keteranganRaw);
     let status = "ok", issue = "";
     if (!prod) { status = "error"; issue = "Produk tidak ditemukan"; }
+    else if ((isPusatAdmin() || isCabangAdmin()) && prod.cluster !== myCluster()) { status = "error"; issue = "Produk bukan milik cluster Anda (" + (myCluster()||"-") + ")"; }
     else if (!wh) { status = "error"; issue = "Gudang \"" + (keteranganRaw||"-") + "\" tidak ditemukan"; }
     return { key: i, productId, productName: prod ? prod.name : productId, qty, keterangan: keteranganRaw, warehouseId: wh ? wh.id : null, warehouseName: wh ? wh.name : (keteranganRaw||"-"), status, issue };
   });
