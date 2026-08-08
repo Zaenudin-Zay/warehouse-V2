@@ -1133,68 +1133,55 @@ async function applyCatalogImport() {
   const rows = state.ui.catalogRows.filter(r => r.status === "new" || r.status === "update");
   if (!rows.length) return;
 
-  try {
-    let added = 0, updated = 0;
+  const btn = document.getElementById('btn-terapkan-katalog');
+  const btnOriginalText = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "Memproses " + rows.length + " produk, mohon tunggu..."; }
 
+  try {
     // Cek langsung ke database (bukan cache lokal) supaya akurat meski
     // produk itu baru saja ditambahkan lewat cluster/sesi lain.
     const { data: freshProducts, error: freshErr } = await sb.from('products').select('id');
     if (freshErr) throw freshErr;
     const existingIds = new Set((freshProducts || []).map(p => p.id));
 
-    for (const r of rows) {
-      const existing = existingIds.has(r.id);
+    const newRows = rows.filter(r => !existingIds.has(r.id));
+    const added = newRows.length;
+    const updated = rows.length - added;
 
-      if (existing) {
-        // Update existing product
-        const { error: updError } = await sb.from('products').update({
-          name: r.name,
-          category: r.category,
-          brand: r.brand,
-          material_code: r.materialCode,
-          family_paket: r.familyPaket,
-          cluster: r.cluster,
-          price: r.price
-        }).eq('id', r.id);
-        if (updError) throw updError;
-        updated++;
-      } else {
-        // Insert new product (upsert sebagai jaring pengaman kalau ID yang
-        // sama muncul dua kali dalam file yang sama)
-        const { error: prodInsError } = await sb.from('products').upsert({
-          id: r.id,
-          name: r.name,
-          category: r.category,
-          brand: r.brand,
-          material_code: r.materialCode,
-          family_paket: r.familyPaket,
-          cluster: r.cluster,
-          price: r.price
-        }, { onConflict: 'id' });
-        if (prodInsError) throw prodInsError;
-        existingIds.add(r.id);
+    // 1. Simpan semua produk (baru + update) dalam SATU batch upsert,
+    //    bukan satu-satu - jauh lebih cepat untuk ratusan baris.
+    const productPayload = rows.map(r => ({
+      id: r.id, name: r.name, category: r.category, brand: r.brand,
+      material_code: r.materialCode, family_paket: r.familyPaket,
+      cluster: r.cluster, price: r.price
+    }));
+    for (let i = 0; i < productPayload.length; i += 200) {
+      const { error: prodErr } = await sb.from('products')
+        .upsert(productPayload.slice(i, i + 200), { onConflict: 'id' });
+      if (prodErr) throw prodErr;
+    }
 
-        // Initialize stock for all warehouses
-        for (const w of state.data.warehouses) {
-          const { error: wsError } = await sb.from('warehouse_stock').upsert({
-            warehouse_id: w.id,
-            product_id: r.id,
-            quantity: 0
-          }, { onConflict: 'warehouse_id,product_id', ignoreDuplicates: true });
-          if (wsError) throw wsError;
-        }
+    // 2. Inisialisasi stok awal (qty 0) HANYA untuk produk yang baru,
+    //    dikirim sebagai batch besar juga - bukan per gudang/per sales.
+    if (newRows.length) {
+      const wsPayload = [];
+      for (const w of state.data.warehouses) {
+        for (const r of newRows) wsPayload.push({ warehouse_id: w.id, product_id: r.id, quantity: 0 });
+      }
+      for (let i = 0; i < wsPayload.length; i += 500) {
+        const { error: wsError } = await sb.from('warehouse_stock')
+          .upsert(wsPayload.slice(i, i + 500), { onConflict: 'warehouse_id,product_id', ignoreDuplicates: true });
+        if (wsError) throw wsError;
+      }
 
-        // Initialize stock for all sales
-        for (const s of state.data.salesTeam) {
-          const { error: ssError } = await sb.from('sales_stock').upsert({
-            sales_id: s.id,
-            product_id: r.id,
-            qty: 0
-          }, { onConflict: 'sales_id,product_id', ignoreDuplicates: true });
-          if (ssError) throw ssError;
-        }
-
-        added++;
+      const ssPayload = [];
+      for (const s of state.data.salesTeam) {
+        for (const r of newRows) ssPayload.push({ sales_id: s.id, product_id: r.id, qty: 0 });
+      }
+      for (let i = 0; i < ssPayload.length; i += 500) {
+        const { error: ssError } = await sb.from('sales_stock')
+          .upsert(ssPayload.slice(i, i + 500), { onConflict: 'sales_id,product_id', ignoreDuplicates: true });
+        if (ssError) throw ssError;
       }
     }
 
@@ -1222,6 +1209,8 @@ async function applyCatalogImport() {
   } catch (e) {
     console.error('applyCatalogImport error:', e);
     notify("Gagal import: " + (e.message || e), "error");
+    const btnRetry = document.getElementById('btn-terapkan-katalog');
+    if (btnRetry) { btnRetry.disabled = false; btnRetry.textContent = btnOriginalText; }
   }
 }
 
@@ -2233,7 +2222,7 @@ function renderKatalogBarang() {
 
   if (rows.length) {
     html += '<div class="section"><div class="section-head"><h3>Preview import (' + okCount + '/' + rows.length + ' baris siap diproses' + (errCount ? ", " + errCount + " bermasalah" : "") + ')</h3>' +
-      '<button class="btn btn-primary" ' + (okCount===0?"disabled":"") + ' onclick="applyCatalogImport()">&#10003; Terapkan (' + newCount + ' baru, ' + updCount + ' update)</button></div>' +
+      '<button class="btn btn-primary" id="btn-terapkan-katalog" ' + (okCount===0?"disabled":"") + ' onclick="applyCatalogImport()">&#10003; Terapkan (' + newCount + ' baru, ' + updCount + ' update)</button></div>' +
       '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Produk</th><th>Brand</th><th>Kategori</th><th>Cluster</th><th class="num">Harga</th><th>Status</th></tr></thead><tbody>' +
       rows.map(r => '<tr><td>'+esc(r.name || r.id)+'</td><td>'+esc(brandLabel(r.brand))+'</td><td class="muted">'+esc(categoryLabel(r.category))+'</td><td class="muted">'+esc(r.cluster||"-")+'</td><td class="num">'+nfmt(r.price)+'</td><td>' +
         (r.status==="new" ? '<span class="badge badge-ok">Baru</span>' : r.status==="update" ? '<span class="badge badge-transfer">Update</span>' : '<span class="badge badge-err">&#9888; '+esc(r.issue)+'</span>') +
