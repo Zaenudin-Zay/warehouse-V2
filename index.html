@@ -595,6 +595,7 @@ const state = {
     salesImportRows: [], salesImportFileName: "",
     allocationRows: [], allocationFileName: "", allocationGudang: "",
     period: "all", periodFrom: "", periodTo: "",
+    stockStatusFilter: "all", salesStockStatusFilter: "all",
     loginError: "", userForm: false },
 };
 
@@ -1786,10 +1787,28 @@ function transactionTable(rows, compact) {
   html += '</tbody></table></div>';
   return html;
 }
+function stockFilterButtons(currentValue, onClickFn) {
+  const opts = [["all","Semua"],["ready","Ready"],["kosong","Kosong"]];
+  return '<div class="row" style="gap:6px;margin-bottom:10px">' +
+    opts.map(([val,label]) => '<button class="btn ' + (currentValue===val ? "btn-primary" : "btn-ghost") + '" style="padding:4px 12px;font-size:12px" onclick="' + onClickFn + '(\'' + val + '\')">' + label + '</button>').join("") +
+  '</div>';
+}
+function onStockStatusFilter(v) { state.ui.stockStatusFilter = v; render(); }
+function onSalesStockStatusFilter(v) { state.ui.salesStockStatusFilter = v; render(); }
+
 function productStockTable(warehouseId) {
   const stock = state.data.stock[warehouseId] || {};
-  let html = '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Brand</th><th>Produk</th><th>Kategori</th><th class="num">Stok</th><th>Status</th></tr></thead><tbody>';
-  myClusterProducts().forEach(p => {
+  const filter = state.ui.stockStatusFilter;
+  const rows = myClusterProducts().filter(p => {
+    const qty = stock[p.id] || 0;
+    if (filter === "ready") return qty > 0;
+    if (filter === "kosong") return qty === 0;
+    return true;
+  });
+  let html = stockFilterButtons(filter, "onStockStatusFilter");
+  html += '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Brand</th><th>Produk</th><th>Kategori</th><th class="num">Stok</th><th>Status</th></tr></thead><tbody>';
+  if (!rows.length) html += '<tr><td colspan="5" class="muted" style="padding:14px 0">Tidak ada produk untuk filter ini.</td></tr>';
+  rows.forEach(p => {
     const qty = stock[p.id] || 0;
     html += '<tr><td>' + brandChip(p.brand) + '</td><td>' + esc(p.name) + '</td><td class="muted">' + esc(categoryLabel(p.category)) + '</td><td class="num ' + (qty<30?"low":"") + '">' + nfmt(qty) + '</td><td>' + (qty>0 ? '<span class="badge badge-ok">Ready</span>' : '<span class="badge badge-err">Kosong</span>') + '</td></tr>';
   });
@@ -2209,8 +2228,19 @@ function renderStokSales() {
       statCard("Gudang & Supervisor", esc((state.data.warehouses.find(w=>w.id===(salesInfo?salesInfo.gudang:""))||{}).name || "-"), "blue", salesInfo && salesInfo.supervisor ? "Supervisor: " + salesInfo.supervisor : "Supervisor: -") +
     '</div>' +
     '<div class="section"><div class="section-head"><h3>Rincian stok per produk</h3></div>' +
+      stockFilterButtons(state.ui.salesStockStatusFilter, "onSalesStockStatusFilter") +
       '<div class="tbl-scroll" style="max-height:420px"><table class="tbl"><thead><tr><th>Brand</th><th>Produk</th><th>Kategori</th><th class="num">Stok</th><th>Status</th></tr></thead><tbody>' +
-      myClusterProducts().map(p => '<tr><td>'+brandChip(p.brand)+'</td><td>'+esc(p.name)+'</td><td class="muted">'+esc(categoryLabel(p.category))+'</td><td class="num">'+nfmt(stock[p.id]||0)+'</td><td>' + ((stock[p.id]||0)>0 ? '<span class="badge badge-ok">Ready</span>' : '<span class="badge badge-err">Kosong</span>') + '</td></tr>').join("") +
+      (function(){
+        const filter = state.ui.salesStockStatusFilter;
+        const rows = myClusterProducts().filter(p => {
+          const qty = stock[p.id] || 0;
+          if (filter === "ready") return qty > 0;
+          if (filter === "kosong") return qty === 0;
+          return true;
+        });
+        if (!rows.length) return '<tr><td colspan="5" class="muted" style="padding:14px 0">Tidak ada produk untuk filter ini.</td></tr>';
+        return rows.map(p => '<tr><td>'+brandChip(p.brand)+'</td><td>'+esc(p.name)+'</td><td class="muted">'+esc(categoryLabel(p.category))+'</td><td class="num">'+nfmt(stock[p.id]||0)+'</td><td>' + ((stock[p.id]||0)>0 ? '<span class="badge badge-ok">Ready</span>' : '<span class="badge badge-err">Kosong</span>') + '</td></tr>').join("");
+      })() +
       '</tbody></table></div>' +
     '</div>' +
   '</div>';
