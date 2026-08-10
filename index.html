@@ -161,9 +161,31 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
  * Column mappings: material_code→materialCode, family_paket→familyPaket
  * @throws {Error} Database error on query failure
  */
+/**
+ * Fetch ALL rows from a Supabase table, bypassing the default 1000-row
+ * response cap by paging through with .range() until a page comes back
+ * shorter than the page size. Without this, tables that grow past 1000
+ * rows (warehouse_stock, sales_stock, transactions, ...) would silently
+ * lose data on every reload.
+ */
+async function fetchAllRows(table, opts) {
+  const pageSize = 1000;
+  let all = [];
+  let from = 0;
+  while (true) {
+    let q = sb.from(table).select(opts && opts.columns ? opts.columns : '*');
+    if (opts && opts.orderBy) q = q.order(opts.orderBy, { ascending: opts.ascending !== false });
+    const { data, error } = await q.range(from, from + pageSize - 1);
+    if (error) throw error;
+    all = all.concat(data);
+    if (!data.length || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
 async function loadProducts() {
-  const { data, error } = await sb.from('products').select('*');
-  if (error) throw error;
+  const data = await fetchAllRows('products');
   return data.map(p => ({
     id: p.id,
     name: p.name,
@@ -182,8 +204,7 @@ async function loadProducts() {
  * @throws {Error} Database error on query failure
  */
 async function loadWarehouses() {
-  const { data, error } = await sb.from('warehouses').select('*');
-  if (error) throw error;
+  const data = await fetchAllRows('warehouses');
   return data.map(w => ({
     id: w.id,
     name: w.name,
@@ -194,8 +215,7 @@ async function loadWarehouses() {
 }
 
 async function loadSalesTeam() {
-  const { data, error } = await sb.from('sales_team').select('*');
-  if (error) throw error;
+  const data = await fetchAllRows('sales_team');
   return data.map(s => ({
     id: s.id,
     name: s.name,
@@ -211,8 +231,7 @@ async function loadSalesTeam() {
  * @throws {Error} Database error on query failure
  */
 async function loadWarehouseStock() {
-  const { data, error } = await sb.from('warehouse_stock').select('*');
-  if (error) throw error;
+  const data = await fetchAllRows('warehouse_stock');
 
   // Build nested dictionary for efficient lookups
   const stock = {};
@@ -232,8 +251,7 @@ async function loadWarehouseStock() {
  * @throws {Error} Database error on query failure
  */
 async function loadSalesStock() {
-  const { data, error } = await sb.from('sales_stock').select('*');
-  if (error) throw error;
+  const data = await fetchAllRows('sales_stock');
 
   // Build nested dictionary for efficient lookups
   const salesStock = {};
@@ -247,11 +265,7 @@ async function loadSalesStock() {
 }
 
 async function loadTransactions() {
-  const { data, error } = await sb
-    .from('transactions')
-    .select('*')
-    .order('date', { ascending: false });
-  if (error) throw error;
+  const data = await fetchAllRows('transactions', { orderBy: 'date', ascending: false });
 
   return data.map(t => ({
     id: t.id,
@@ -266,8 +280,7 @@ async function loadTransactions() {
 }
 
 async function loadReturItems() {
-  const { data, error } = await sb.from('retur_items').select('*');
-  if (error) throw error;
+  const data = await fetchAllRows('retur_items');
 
   return data.map(r => ({
     id: r.id,
@@ -283,8 +296,7 @@ async function loadReturItems() {
 }
 
 async function loadUsers() {
-  const { data, error } = await sb.from('users').select('*');
-  if (error) throw error;
+  const data = await fetchAllRows('users');
 
   return data.map(u => ({
     id: u.id,
@@ -924,8 +936,11 @@ async function applyAllocationImport() {
     const stockPayload = Object.entries(stockDelta).map(([productId, quantity]) => ({
       warehouse_id: gudangId, product_id: productId, quantity
     }));
-    const { error: stockError } = await sb.from('warehouse_stock').upsert(stockPayload, { onConflict: 'warehouse_id,product_id' });
+    const { data: stockData, error: stockError } = await sb.from('warehouse_stock')
+      .upsert(stockPayload, { onConflict: 'warehouse_id,product_id' }).select();
     if (stockError) throw stockError;
+    if (!stockData || stockData.length !== stockPayload.length)
+      throw new Error("Stok gudang hanya " + (stockData?stockData.length:0) + "/" + stockPayload.length + " baris tersimpan (kemungkinan diblokir izin akses Supabase)");
 
     // Baris sudah unik per (sales, produk) dari proses grouping sebelumnya,
     // jadi stok sales bisa langsung dikirim sebagai satu batch juga.
@@ -933,8 +948,11 @@ async function applyAllocationImport() {
       sales_id: r.salesId, product_id: r.productId,
       qty: (state.data.salesStock[r.salesId]?.[r.productId] || 0) + r.qty
     }));
-    const { error: salesError } = await sb.from('sales_stock').upsert(salesPayload, { onConflict: 'sales_id,product_id' });
+    const { data: salesData, error: salesError } = await sb.from('sales_stock')
+      .upsert(salesPayload, { onConflict: 'sales_id,product_id' }).select();
     if (salesError) throw salesError;
+    if (!salesData || salesData.length !== salesPayload.length)
+      throw new Error("Stok sales hanya " + (salesData?salesData.length:0) + "/" + salesPayload.length + " baris tersimpan (kemungkinan diblokir izin akses Supabase)");
 
     const txPayload = rows.map(r => ({
       id: uid('trx'), type: 'distribusi', date: new Date().toISOString(),
@@ -1267,8 +1285,7 @@ async function applyCatalogImport() {
   try {
     // Cek langsung ke database (bukan cache lokal) supaya akurat meski
     // produk itu baru saja ditambahkan lewat cluster/sesi lain.
-    const { data: freshProducts, error: freshErr } = await sb.from('products').select('id');
-    if (freshErr) throw freshErr;
+    const freshProducts = await fetchAllRows('products', { columns: 'id' });
     const existingIds = new Set((freshProducts || []).map(p => p.id));
 
     const newRows = rows.filter(r => !existingIds.has(r.id));
