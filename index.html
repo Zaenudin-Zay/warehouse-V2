@@ -1788,10 +1788,10 @@ function transactionTable(rows, compact) {
 }
 function productStockTable(warehouseId) {
   const stock = state.data.stock[warehouseId] || {};
-  let html = '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Brand</th><th>Produk</th><th>Kategori</th><th class="num">Stok</th></tr></thead><tbody>';
-  state.data.products.forEach(p => {
+  let html = '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Brand</th><th>Produk</th><th>Kategori</th><th class="num">Stok</th><th>Status</th></tr></thead><tbody>';
+  myClusterProducts().forEach(p => {
     const qty = stock[p.id] || 0;
-    html += '<tr><td>' + brandChip(p.brand) + '</td><td>' + esc(p.name) + '</td><td class="muted">' + esc(categoryLabel(p.category)) + '</td><td class="num ' + (qty<30?"low":"") + '">' + nfmt(qty) + '</td></tr>';
+    html += '<tr><td>' + brandChip(p.brand) + '</td><td>' + esc(p.name) + '</td><td class="muted">' + esc(categoryLabel(p.category)) + '</td><td class="num ' + (qty<30?"low":"") + '">' + nfmt(qty) + '</td><td>' + (qty>0 ? '<span class="badge badge-ok">Ready</span>' : '<span class="badge badge-err">Kosong</span>') + '</td></tr>';
   });
   html += '</tbody></table></div>';
   return html;
@@ -2209,8 +2209,8 @@ function renderStokSales() {
       statCard("Gudang & Supervisor", esc((state.data.warehouses.find(w=>w.id===(salesInfo?salesInfo.gudang:""))||{}).name || "-"), "blue", salesInfo && salesInfo.supervisor ? "Supervisor: " + salesInfo.supervisor : "Supervisor: -") +
     '</div>' +
     '<div class="section"><div class="section-head"><h3>Rincian stok per produk</h3></div>' +
-      '<div class="tbl-scroll" style="max-height:420px"><table class="tbl"><thead><tr><th>Brand</th><th>Produk</th><th>Kategori</th><th class="num">Stok</th></tr></thead><tbody>' +
-      state.data.products.map(p => '<tr><td>'+brandChip(p.brand)+'</td><td>'+esc(p.name)+'</td><td class="muted">'+esc(categoryLabel(p.category))+'</td><td class="num">'+nfmt(stock[p.id]||0)+'</td></tr>').join("") +
+      '<div class="tbl-scroll" style="max-height:420px"><table class="tbl"><thead><tr><th>Brand</th><th>Produk</th><th>Kategori</th><th class="num">Stok</th><th>Status</th></tr></thead><tbody>' +
+      myClusterProducts().map(p => '<tr><td>'+brandChip(p.brand)+'</td><td>'+esc(p.name)+'</td><td class="muted">'+esc(categoryLabel(p.category))+'</td><td class="num">'+nfmt(stock[p.id]||0)+'</td><td>' + ((stock[p.id]||0)>0 ? '<span class="badge badge-ok">Ready</span>' : '<span class="badge badge-err">Kosong</span>') + '</td></tr>').join("") +
       '</tbody></table></div>' +
     '</div>' +
   '</div>';
