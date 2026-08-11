@@ -95,6 +95,9 @@
   table.tbl td { padding: 7px 10px 7px 0; border-bottom: 1px solid #f1f5f9; }
   table.tbl tr:last-child td { border-bottom: none; }
   .tbl-scroll { max-height: 400px; overflow-y: auto; }
+  .product-picker-list { display: none; position: absolute; z-index: 30; top: 100%; left: 0; right: 0; margin-top: 4px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; max-height: 260px; overflow-y: auto; box-shadow: 0 8px 20px rgba(0,0,0,.12); }
+  .product-picker-item { padding: 8px 10px; font-size: 13px; cursor: pointer; }
+  .product-picker-item:hover { background: #eef2ff; }
   .num { text-align: right; font-weight: 500; }
   .low { color: #e11d48; }
   .muted { color: #94a3b8; font-size: 12px; }
@@ -1787,6 +1790,39 @@ function transactionTable(rows, compact) {
   html += '</tbody></table></div>';
   return html;
 }
+const PRODUCT_PICKER_ONCHANGE = {};
+function productPickerHTML(id, onChangeFn) {
+  if (onChangeFn) PRODUCT_PICKER_ONCHANGE[id] = onChangeFn;
+  return '<div style="position:relative">' +
+    '<input type="text" class="input" id="' + id + '-search" placeholder="Cari nama atau ID produk..." autocomplete="off" ' +
+      'oninput="filterProductPicker(\'' + id + '\')" onfocus="filterProductPicker(\'' + id + '\')" onblur="setTimeout(function(){hideProductPicker(\'' + id + '\')},150)">' +
+    '<input type="hidden" id="' + id + '">' +
+    '<div id="' + id + '-list" class="product-picker-list"></div>' +
+  '</div>';
+}
+function filterProductPicker(id) {
+  const searchEl = document.getElementById(id + "-search");
+  const listEl = document.getElementById(id + "-list");
+  if (!searchEl || !listEl) return;
+  const q = normKey(searchEl.value);
+  const items = myClusterProducts().filter(p => !q || normKey(p.name).includes(q) || normKey(p.id).includes(q)).slice(0, 50);
+  listEl.innerHTML = items.length
+    ? items.map(p => '<div class="product-picker-item" onmousedown="selectProductPicker(\'' + id + '\',\'' + p.id + '\')">' + esc(p.name) + ' <span class="muted">(' + esc(p.id) + ' &middot; ' + nfmt(p.price) + ')</span></div>').join("")
+    : '<div class="muted" style="padding:8px 10px">Tidak ditemukan</div>';
+  listEl.style.display = "block";
+}
+function selectProductPicker(id, productId) {
+  const prod = state.data.products.find(p => p.id === productId);
+  document.getElementById(id).value = productId;
+  document.getElementById(id + "-search").value = prod ? prod.name : productId;
+  document.getElementById(id + "-list").style.display = "none";
+  if (PRODUCT_PICKER_ONCHANGE[id]) PRODUCT_PICKER_ONCHANGE[id]();
+}
+function hideProductPicker(id) {
+  const el = document.getElementById(id + "-list");
+  if (el) el.style.display = "none";
+}
+
 function stockFilterButtons(currentValue, onClickFn) {
   const opts = [["all","Semua"],["ready","Ready"],["kosong","Kosong"]];
   return '<div class="row" style="gap:6px;margin-bottom:10px">' +
@@ -2007,7 +2043,7 @@ function renderGudangPusat() {
       '<div class="section"><div class="section-head"><h3>Stok per produk</h3></div>' + (selected ? productStockTable(selected) : '<p class="muted">Belum ada gudang pusat.</p>') + '</div>' +
       '<div class="section"><div class="section-head"><h3>Catat barang masuk</h3></div>' +
         '<div class="stack" style="gap:12px">' +
-          '<label class="field"><span>Produk</span><select class="input" id="pusat-produk"><option value="">Pilih produk</option>' + productOptions("") + '</select></label>' +
+          '<label class="field"><span>Produk</span>' + productPickerHTML("pusat-produk") + '</label>' +
           '<label class="field"><span>Jumlah</span><input class="input" type="number" min="1" id="pusat-qty" placeholder="Jumlah unit"></label>' +
           '<label class="field"><span>Catatan (opsional)</span><input class="input" id="pusat-note" placeholder="mis. restock dari principal"></label>' +
           '<button class="btn btn-primary" ' + (selected?"":"disabled") + ' onclick="onStockIn()">+ Tambah stok masuk</button>' +
@@ -2062,7 +2098,7 @@ function renderGudangCabang() {
             if (isPusatAdmin()) pusatOptions = pusatOptions.filter(w=>w.id===myGudangPusatId());
             return pusatOptions.map(w=>'<option value="'+w.id+'">'+esc(w.name)+'</option>').join("");
           })() + '</select></label>' +
-          '<label class="field"><span>Produk</span><select class="input" id="cabang-produk" onchange="renderAvailPusat()"><option value="">Pilih produk</option>' + productOptions("") + '</select></label>' +
+          '<label class="field"><span>Produk</span>' + productPickerHTML("cabang-produk", renderAvailPusat) + '</label>' +
           '<label class="field"><span>Jumlah</span><input class="input" type="number" min="1" id="cabang-qty" placeholder="Jumlah unit"></label>' +
           '<div class="muted" id="cabang-avail">Stok pusat tersedia: 0</div>' +
           '<button class="btn btn-primary" onclick="onTransferCabang()">&#8646; Kirim ke cabang</button>' +
