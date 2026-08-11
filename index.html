@@ -2155,7 +2155,7 @@ function renderDistribusi() {
       '<div class="stack" style="gap:12px">' +
         '<label class="field"><span>Gudang asal</span><select class="input" id="dist-gudang">' + warehouseOptions.map(w=>'<option value="'+w.id+'">'+esc(w.name)+'</option>').join("") + '</select></label>' +
         '<label class="field"><span>Sales tujuan</span><select class="input" id="dist-sales"><option value="">Pilih sales</option>' + salesList.map(s=>'<option value="'+s.id+'">'+esc(s.name)+'</option>').join("") + '</select></label>' +
-        '<label class="field"><span>Produk</span><select class="input" id="dist-produk" onchange="renderDistAvail()"><option value="">Pilih produk</option>' + productOptions("") + '</select></label>' +
+        '<label class="field"><span>Produk</span>' + productPickerHTML("dist-produk", renderDistAvail) + '</label>' +
         '<label class="field"><span>Jumlah</span><input class="input" type="number" min="1" id="dist-qty" placeholder="Jumlah unit"></label>' +
         '<div class="muted" id="dist-avail"></div>' +
         '<button class="btn btn-primary" onclick="onDistribusi()">&#128666; Kirim ke sales</button>' +
@@ -2545,7 +2545,7 @@ function renderStatusBarang() {
         '<div class="stack" style="gap:12px">' +
           '<label class="field"><span>Lokasi saat ini</span><select class="input" id="status-sourcetype" onchange="onStatusSourceTypeChange(this.value)"><option value="cabang"'+(sourceType==="cabang"?" selected":"")+'>Gudang (pusat/cabang)</option><option value="sales"'+(sourceType==="sales"?" selected":"")+'>Tim sales</option></select></label>' +
           '<label class="field"><span>' + (sourceType==="sales"?"Sales":"Gudang") + '</span><select class="input" id="status-sourceid"><option value="">Pilih lokasi</option>' + locationOptions.map(o=>'<option value="'+o.id+'">'+esc(o.name)+'</option>').join("") + '</select></label>' +
-          '<label class="field"><span>Produk</span><select class="input" id="status-produk"><option value="">Pilih produk</option>' + productOptions("") + '</select></label>' +
+          '<label class="field"><span>Produk</span>' + productPickerHTML("status-produk") + '</label>' +
           '<label class="field"><span>Jumlah</span><input class="input" type="number" min="1" id="status-qty" placeholder="Jumlah unit"></label>' +
           '<label class="field"><span>Keterangan</span><input class="input" id="status-reason" placeholder="mis. gagal aktivasi, kartu rusak"></label>' +
           '<button class="btn btn-primary" onclick="onReportIssue()">&#9888; Laporkan</button>' +
