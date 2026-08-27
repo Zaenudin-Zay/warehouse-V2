@@ -594,6 +594,7 @@ const state = {
   tab: "dashboard",
   ui: { cabangSelected: "", salesSelectedStok: "", uploadRows: [], uploadFileName: "", riwayatFilter: "", statusSourceType: "cabang",
     catalogRows: [], catalogFileName: "", catalogSearch: "", catalogBrandFilter: "", catalogCategoryFilter: "",
+    dashboardClusterFilter: "", dashboardPusatSort: "cluster",
     stockImportRows: [], stockImportFileName: "",
     salesImportRows: [], salesImportFileName: "",
     allocationRows: [], allocationFileName: "", allocationGudang: "",
@@ -1992,8 +1993,50 @@ function renderDashboard() {
       '<div class="section"><div class="section-head"><h3>Produk terlaris (' + pLabel + ')</h3></div>' + barListHtml(topSelling) + '</div>' +
       '<div class="section"><div class="section-head"><h3>Transaksi (' + pLabel + ')</h3></div>' + transactionTable(periodTx.slice(0,6), true) + '</div>' +
     '</div>' +
+    (isHQ() ? renderGudangPusatNasional(priceMap) : "") +
   '</div>';
 }
+function renderGudangPusatNasional(priceMap) {
+  priceMap = priceMap || buildPriceMap();
+  const pusatList = state.data.warehouses.filter(w=>w.type==="pusat");
+  const clusters = Array.from(new Set(pusatList.map(w=>w.kota).filter(Boolean))).sort();
+  const filter = state.ui.dashboardClusterFilter;
+  let rows = pusatList.map(w => {
+    const stock = state.data.stock[w.id] || {};
+    const qty = Object.values(stock).reduce((a,b)=>a+b,0);
+    return { id: w.id, name: w.name, cluster: w.kota || "-", qty, value: sumStockValue(stock, priceMap) };
+  });
+  if (filter) rows = rows.filter(r => r.cluster === filter);
+  const sort = state.ui.dashboardPusatSort;
+  if (sort === "qty") rows.sort((a,b)=>b.qty-a.qty);
+  else if (sort === "value") rows.sort((a,b)=>b.value-a.value);
+  else rows.sort((a,b)=>a.cluster.localeCompare(b.cluster));
+  const totalQty = rows.reduce((a,r)=>a+r.qty,0);
+  const totalValue = rows.reduce((a,r)=>a+r.value,0);
+  return '<div class="section"><div class="section-head"><h3>Gudang Pusat Nasional</h3>' +
+      '<div class="row">' +
+        '<select class="input" onchange="onDashboardClusterFilter(this.value)">' +
+          '<option value="">Semua cluster</option>' +
+          clusters.map(c=>'<option value="'+esc(c)+'"'+(c===filter?" selected":"")+'>'+esc(c)+'</option>').join("") +
+        '</select>' +
+        '<select class="input" onchange="onDashboardPusatSort(this.value)">' +
+          '<option value="cluster"'+(sort==="cluster"?" selected":"")+'>Urutkan: Cluster</option>' +
+          '<option value="qty"'+(sort==="qty"?" selected":"")+'>Urutkan: Stok tertinggi</option>' +
+          '<option value="value"'+(sort==="value"?" selected":"")+'>Urutkan: Nilai tertinggi</option>' +
+        '</select>' +
+      '</div>' +
+    '</div>' +
+    '<div class="tbl-scroll"><table class="tbl"><thead><tr><th>Cluster</th><th>Gudang Pusat</th><th class="num">Stok (unit)</th><th class="num">Nilai</th><th>Status</th></tr></thead><tbody>' +
+      (rows.length ? rows.map(r => '<tr><td>'+esc(r.cluster)+'</td><td>'+esc(r.name)+'</td><td class="num">'+nfmt(r.qty)+'</td><td class="num">'+rupiah(r.value)+'</td><td>' +
+        (r.qty>0 ? '<span class="badge badge-ok">Ready</span>' : '<span class="badge badge-err">Kosong</span>') +
+        '</td></tr>').join("") : '<tr><td colspan="5" class="muted">Tidak ada gudang pusat untuk cluster ini.</td></tr>') +
+    '</tbody>' +
+    (rows.length ? '<tfoot><tr><td colspan="2"><strong>Total ('+rows.length+' gudang)</strong></td><td class="num"><strong>'+nfmt(totalQty)+'</strong></td><td class="num"><strong>'+rupiah(totalValue)+'</strong></td><td></td></tr></tfoot>' : "") +
+    '</table></div>' +
+  '</div>';
+}
+function onDashboardClusterFilter(v) { state.ui.dashboardClusterFilter = v; render(); }
+function onDashboardPusatSort(v) { state.ui.dashboardPusatSort = v; render(); }
 
 function renderGudangPusat() {
   let pusatList = state.data.warehouses.filter(w=>w.type==="pusat");
