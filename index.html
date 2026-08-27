@@ -1966,6 +1966,7 @@ function renderDashboard() {
   const pLabel = periodLabel();
   return '<div class="stack">' +
     renderPeriodFilter() +
+    (isHQ() ? renderGudangPusatNasional(priceMap) : "") +
     '<div class="grid grid-6">' +
       statCard("Stok Gudang Pusat", nfmt(totalPusat), "indigo", rupiah(totalPusatValue)) +
       statCard("Stok Gudang Cabang", nfmt(totalCabang), "blue", rupiah(totalCabangValue)) +
@@ -1985,15 +1986,16 @@ function renderDashboard() {
         '<div class="flow-node rose"><div class="lbl">Terjual (' + pLabel + ')</div><div class="val">'+nfmt(terjualPeriode)+'</div><div class="sub">'+rupiah(terjualPeriodeValue)+'</div></div>' +
       '</div>' +
     '</div>' +
-    '<div class="grid grid-2-1">' +
-      '<div class="section"><div class="section-head"><h3>Barang masuk vs terjual (' + pLabel + ')</h3></div>' + areaChartSvg(flowData) + '<div class="legend-row"><span class="dot" style="background:#059669"></span>Masuk&nbsp;&nbsp;<span class="dot" style="background:#e11d48"></span>Terjual</div></div>' +
-      '<div class="section"><div class="section-head"><h3>Stok per operator</h3></div>' + donutSvg(donutSegments) + '</div>' +
-    '</div>' +
-    '<div class="grid grid-2">' +
-      '<div class="section"><div class="section-head"><h3>Produk terlaris (' + pLabel + ')</h3></div>' + barListHtml(topSelling) + '</div>' +
-      '<div class="section"><div class="section-head"><h3>Transaksi (' + pLabel + ')</h3></div>' + transactionTable(periodTx.slice(0,6), true) + '</div>' +
-    '</div>' +
-    (isHQ() ? renderGudangPusatNasional(priceMap) : "") +
+    (isHQ() ? "" :
+      '<div class="grid grid-2-1">' +
+        '<div class="section"><div class="section-head"><h3>Barang masuk vs terjual (' + pLabel + ')</h3></div>' + areaChartSvg(flowData) + '<div class="legend-row"><span class="dot" style="background:#059669"></span>Masuk&nbsp;&nbsp;<span class="dot" style="background:#e11d48"></span>Terjual</div></div>' +
+        '<div class="section"><div class="section-head"><h3>Stok per operator</h3></div>' + donutSvg(donutSegments) + '</div>' +
+      '</div>' +
+      '<div class="grid grid-2">' +
+        '<div class="section"><div class="section-head"><h3>Produk terlaris (' + pLabel + ')</h3></div>' + barListHtml(topSelling) + '</div>' +
+        '<div class="section"><div class="section-head"><h3>Transaksi (' + pLabel + ')</h3></div>' + transactionTable(periodTx.slice(0,6), true) + '</div>' +
+      '</div>'
+    ) +
   '</div>';
 }
 function renderGudangPusatNasional(priceMap) {
@@ -2026,13 +2028,11 @@ function renderGudangPusatNasional(priceMap) {
         '</select>' +
       '</div>' +
     '</div>' +
-    '<div class="tbl-scroll"><table class="tbl"><thead><tr><th>Cluster</th><th>Gudang Pusat</th><th class="num">Stok (unit)</th><th class="num">Nilai</th><th>Status</th></tr></thead><tbody>' +
-      (rows.length ? rows.map(r => '<tr><td>'+esc(r.cluster)+'</td><td>'+esc(r.name)+'</td><td class="num">'+nfmt(r.qty)+'</td><td class="num">'+rupiah(r.value)+'</td><td>' +
-        (r.qty>0 ? '<span class="badge badge-ok">Ready</span>' : '<span class="badge badge-err">Kosong</span>') +
-        '</td></tr>').join("") : '<tr><td colspan="5" class="muted">Tidak ada gudang pusat untuk cluster ini.</td></tr>') +
-    '</tbody>' +
-    (rows.length ? '<tfoot><tr><td colspan="2"><strong>Total ('+rows.length+' gudang)</strong></td><td class="num"><strong>'+nfmt(totalQty)+'</strong></td><td class="num"><strong>'+rupiah(totalValue)+'</strong></td><td></td></tr></tfoot>' : "") +
-    '</table></div>' +
+    '<div class="grid grid-3">' +
+      (rows.length ? rows.map(r => statCard(r.cluster, nfmt(r.qty), r.qty>0?"indigo":"slate", r.name + ' \u00b7 ' + rupiah(r.value) + ' \u00b7 ' + (r.qty>0?"Ready":"Kosong"))).join("") :
+        '<p class="muted">Tidak ada gudang pusat untuk cluster ini.</p>') +
+    '</div>' +
+    (rows.length ? '<p class="muted" style="margin-top:10px">Total '+rows.length+' gudang &middot; '+nfmt(totalQty)+' unit &middot; '+rupiah(totalValue)+'</p>' : "") +
   '</div>';
 }
 function onDashboardClusterFilter(v) { state.ui.dashboardClusterFilter = v; render(); }
