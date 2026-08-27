@@ -1918,21 +1918,30 @@ function barListHtml(items) {
 
 // ---------------- tab renderers ----------------
 function renderDashboard() {
-  const totalPusat = sumStockByType("pusat");
-  const totalCabang = sumStockByType("cabang");
-  const totalSales = sumSalesStock();
+  const clusterFilter = isHQ() ? state.ui.dashboardClusterFilter : "";
+  const inCluster = (id) => !clusterFilter || locationCluster(id) === clusterFilter;
   const priceMap = buildPriceMap();
-  const totalPusatValue = state.data.warehouses.filter(w=>w.type==="pusat").reduce((acc,w)=>acc+sumStockValue(state.data.stock[w.id], priceMap),0);
-  const totalCabangValue = state.data.warehouses.filter(w=>w.type==="cabang").reduce((acc,w)=>acc+sumStockValue(state.data.stock[w.id], priceMap),0);
-  const totalSalesValue = Object.values(state.data.salesStock).reduce((acc,m)=>acc+sumStockValue(m, priceMap),0);
-  const pendingReplacement = state.data.returItems.filter(r=>r.status==="menunggu_penggantian");
+
+  const pusatWarehouses = state.data.warehouses.filter(w=>w.type==="pusat" && (!clusterFilter || warehouseCluster(w)===clusterFilter));
+  const cabangWarehouses = state.data.warehouses.filter(w=>w.type==="cabang" && (!clusterFilter || warehouseCluster(w)===clusterFilter));
+  const salesIds = clusterFilter ? state.data.salesTeam.filter(s=>locationCluster(s.id)===clusterFilter).map(s=>s.id) : Object.keys(state.data.salesStock);
+
+  const totalPusat = pusatWarehouses.reduce((acc,w)=>acc+Object.values(state.data.stock[w.id]||{}).reduce((a,b)=>a+b,0),0);
+  const totalCabang = cabangWarehouses.reduce((acc,w)=>acc+Object.values(state.data.stock[w.id]||{}).reduce((a,b)=>a+b,0),0);
+  const totalSales = salesIds.reduce((acc,id)=>acc+Object.values(state.data.salesStock[id]||{}).reduce((a,b)=>a+b,0),0);
+  const totalPusatValue = pusatWarehouses.reduce((acc,w)=>acc+sumStockValue(state.data.stock[w.id], priceMap),0);
+  const totalCabangValue = cabangWarehouses.reduce((acc,w)=>acc+sumStockValue(state.data.stock[w.id], priceMap),0);
+  const totalSalesValue = salesIds.reduce((acc,id)=>acc+sumStockValue(state.data.salesStock[id], priceMap),0);
+  const pendingReplacement = state.data.returItems.filter(r=>r.status==="menunggu_penggantian" && inCluster(r.sourceId));
   const pendingQty = pendingReplacement.reduce((a,r)=>a+r.qty,0);
 
   const periodTx = state.data.transactions.filter(t => inPeriod(t.date));
-  const masukPeriode = periodTx.filter(t=>t.type==="masuk").reduce((a,t)=>a+t.qty,0);
-  const terjualPeriode = periodTx.filter(t=>t.type==="penjualan").reduce((a,t)=>a+t.qty,0);
-  const masukPeriodeValue = periodTx.filter(t=>t.type==="masuk"||t.type==="penggantian_masuk").reduce((a,t)=>a+t.qty*(priceMap[t.productId]||0),0);
-  const terjualPeriodeValue = periodTx.filter(t=>t.type==="penjualan").reduce((a,t)=>a+t.qty*(priceMap[t.productId]||0),0);
+  const masukTx = periodTx.filter(t=>t.type==="masuk" && inCluster(t.to));
+  const terjualTx = periodTx.filter(t=>t.type==="penjualan" && inCluster(t.from));
+  const masukPeriode = masukTx.reduce((a,t)=>a+t.qty,0);
+  const terjualPeriode = terjualTx.reduce((a,t)=>a+t.qty,0);
+  const masukPeriodeValue = periodTx.filter(t=>(t.type==="masuk"||t.type==="penggantian_masuk") && inCluster(t.to)).reduce((a,t)=>a+t.qty*(priceMap[t.productId]||0),0);
+  const terjualPeriodeValue = terjualTx.reduce((a,t)=>a+t.qty*(priceMap[t.productId]||0),0);
 
   const { start, end } = getPeriodRange();
   const spanDays = (start && end) ? Math.ceil((end-start)/86400000) : null;
