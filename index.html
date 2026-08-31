@@ -2211,7 +2211,24 @@ function renderDistribusi() {
   const allocRows = state.ui.allocationRows;
   const allocOk = allocRows.filter(r=>r.status==="ok").length;
   const allocErr = allocRows.filter(r=>r.status==="error").length;
-  return '<div class="grid grid-2-1">' +
+  return '<div class="section"><div class="section-head"><h3>Input Allocation Log</h3>' +
+      '<button class="btn btn-ghost" onclick="downloadAllocationTemplate()">&#8681; Download template</button>' +
+    '</div>' +
+    '<p class="muted" style="font-size:13px;color:#5d7a80">Upload file allocation log (<code class="inline">.xlsx</code> atau <code class="inline">.csv</code>) untuk distribusi massal ke banyak sales sekaligus — download template di atas (format .xlsx). Kolom <code class="inline">Canvasser ID</code> dipakai sebagai sales tujuan, <code class="inline">Product ID</code> sebagai produk, dan <code class="inline">Total</code> sebagai jumlah. Baris dengan Canvasser ID + Product ID yang sama otomatis dijumlahkan.</p>' +
+    '<div class="row" style="align-items:flex-end;gap:12px">' +
+      '<label class="field"><span>Gudang asal</span><select class="input" id="alloc-gudang" onchange="onAllocationGudangChange(this.value)"><option value="">Pilih gudang</option>' + warehouseOptions.map(w=>'<option value="'+w.id+'"'+(w.id===state.ui.allocationGudang?" selected":"")+'>'+esc(w.name)+'</option>').join("") + '</select></label>' +
+      '<label class="field"><span>File</span><input type="file" accept=".csv,.xlsx,.xls" onchange="handleAllocationFile(this)"></label>' +
+      (state.ui.allocationFileName ? '<span class="muted">'+esc(state.ui.allocationFileName)+'</span>' : '') +
+    '</div>' +
+    (allocRows.length ? (
+      '<div style="margin-top:14px"><div class="section-head"><h3 style="font-size:13px">Preview (' + allocOk + '/' + allocRows.length + ' baris siap' + (allocErr ? ", " + allocErr + " bermasalah" : "") + ')</h3>' +
+        '<button class="btn btn-primary" ' + (allocOk===0?"disabled":"") + ' onclick="applyAllocationImport()">&#10003; Proses ' + allocOk + ' baris</button></div>' +
+        '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Sales</th><th>Produk</th><th class="num">Qty</th><th>Status</th></tr></thead><tbody>' +
+        allocRows.map(r => '<tr><td>'+esc(r.salesName)+' <span class="muted">('+esc(r.salesId)+')</span></td><td>'+esc(r.productName)+'</td><td class="num">'+nfmt(r.qty)+'</td><td>' + (r.status==="ok" ? '<span class="badge badge-ok">&#10003; Siap</span>' : '<span class="badge badge-err">&#9888; '+esc(r.issue)+'</span>') + '</td></tr>').join("") +
+        '</tbody></table></div></div>'
+    ) : "") +
+  '</div>' +
+  '<div class="grid grid-2-1" style="margin-top:20px">' +
     '<div class="section"><div class="section-head"><h3>Stok saat ini di tim sales</h3></div>' +
       (salesList.length ? (
         '<table class="tbl"><thead><tr><th>ID</th><th>Sales</th><th>Gudang</th><th class="num">Total unit dipegang</th></tr></thead><tbody>' +
@@ -2233,23 +2250,6 @@ function renderDistribusi() {
         '<button class="btn btn-primary" onclick="onDistribusi()">&#128666; Kirim ke sales</button>' +
       '</div>' +
     '</div>' +
-  '</div>' +
-  '<div class="section" style="margin-top:20px"><div class="section-head"><h3>Input Allocation Log</h3>' +
-      '<button class="btn btn-ghost" onclick="downloadAllocationTemplate()">&#8681; Download template</button>' +
-    '</div>' +
-    '<p class="muted" style="font-size:13px;color:#5d7a80">Upload file allocation log (<code class="inline">.xlsx</code> atau <code class="inline">.csv</code>) untuk distribusi massal ke banyak sales sekaligus — download template di atas (format .xlsx). Kolom <code class="inline">Canvasser ID</code> dipakai sebagai sales tujuan, <code class="inline">Product ID</code> sebagai produk, dan <code class="inline">Total</code> sebagai jumlah. Baris dengan Canvasser ID + Product ID yang sama otomatis dijumlahkan.</p>' +
-    '<div class="row" style="align-items:flex-end;gap:12px">' +
-      '<label class="field"><span>Gudang asal</span><select class="input" id="alloc-gudang" onchange="onAllocationGudangChange(this.value)"><option value="">Pilih gudang</option>' + warehouseOptions.map(w=>'<option value="'+w.id+'"'+(w.id===state.ui.allocationGudang?" selected":"")+'>'+esc(w.name)+'</option>').join("") + '</select></label>' +
-      '<label class="field"><span>File</span><input type="file" accept=".csv,.xlsx,.xls" onchange="handleAllocationFile(this)"></label>' +
-      (state.ui.allocationFileName ? '<span class="muted">'+esc(state.ui.allocationFileName)+'</span>' : '') +
-    '</div>' +
-    (allocRows.length ? (
-      '<div style="margin-top:14px"><div class="section-head"><h3 style="font-size:13px">Preview (' + allocOk + '/' + allocRows.length + ' baris siap' + (allocErr ? ", " + allocErr + " bermasalah" : "") + ')</h3>' +
-        '<button class="btn btn-primary" ' + (allocOk===0?"disabled":"") + ' onclick="applyAllocationImport()">&#10003; Proses ' + allocOk + ' baris</button></div>' +
-        '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Sales</th><th>Produk</th><th class="num">Qty</th><th>Status</th></tr></thead><tbody>' +
-        allocRows.map(r => '<tr><td>'+esc(r.salesName)+' <span class="muted">('+esc(r.salesId)+')</span></td><td>'+esc(r.productName)+'</td><td class="num">'+nfmt(r.qty)+'</td><td>' + (r.status==="ok" ? '<span class="badge badge-ok">&#10003; Siap</span>' : '<span class="badge badge-err">&#9888; '+esc(r.issue)+'</span>') + '</td></tr>').join("") +
-        '</tbody></table></div></div>'
-    ) : "") +
   '</div>';
 }
 function renderDistAvail() {
