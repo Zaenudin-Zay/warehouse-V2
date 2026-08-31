@@ -635,7 +635,7 @@ const state = {
     salesImportRows: [], salesImportFileName: "",
     allocationRows: [], allocationFileName: "", allocationGudang: "",
     period: "all", periodFrom: "", periodTo: "",
-    stockStatusFilter: "all", salesStockStatusFilter: "all",
+    stockStatusFilter: "all", salesStockStatusFilter: "all", stockBrandFilter: "",
     loginError: "", userForm: false },
 };
 
@@ -2032,17 +2032,28 @@ function stockFilterButtons(currentValue, onClickFn) {
 }
 function onStockStatusFilter(v) { state.ui.stockStatusFilter = v; render(); }
 function onSalesStockStatusFilter(v) { state.ui.salesStockStatusFilter = v; render(); }
+function onStockBrandFilter(v) { state.ui.stockBrandFilter = v; render(); }
 
 function productStockTable(warehouseId) {
   const stock = state.data.stock[warehouseId] || {};
   const filter = state.ui.stockStatusFilter;
+  const brandFilter = state.ui.stockBrandFilter;
   const rows = myClusterProducts().filter(p => {
+    if (brandFilter && brandKey(p.brand) !== brandFilter) return false;
     const qty = stock[p.id] || 0;
     if (filter === "ready") return qty > 0;
     if (filter === "kosong") return qty === 0;
     return true;
   });
-  let html = stockFilterButtons(filter, "onStockStatusFilter");
+  let html = '<div class="row" style="justify-content:space-between;margin-bottom:10px;gap:10px">' +
+    stockFilterButtons(filter, "onStockStatusFilter") +
+    '<select class="input" onchange="onStockBrandFilter(this.value)" style="min-width:150px">' +
+      '<option value="">Semua brand</option>' +
+      '<option value="xl"' + (brandFilter==="xl"?" selected":"") + '>XL</option>' +
+      '<option value="axis"' + (brandFilter==="axis"?" selected":"") + '>Axis</option>' +
+      '<option value="smartfren"' + (brandFilter==="smartfren"?" selected":"") + '>Smartfren</option>' +
+    '</select>' +
+  '</div>';
   html += '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Brand</th><th>Produk</th><th>Kategori</th><th class="num">Stok</th><th>Status</th></tr></thead><tbody>';
   if (!rows.length) html += '<tr><td colspan="5" class="muted" style="padding:14px 0">Tidak ada produk untuk filter ini.</td></tr>';
   rows.forEach(p => {
