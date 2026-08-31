@@ -40,6 +40,10 @@
   .topbar { height: 56px; flex-shrink: 0; background: #fff; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; }
   .topbar-date { font-size: 13px; color: var(--ink-muted); }
   .pill-warning { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; background: #fdecc8; color: #92400e; padding: 5px 12px; border-radius: 999px; }
+  .ticker-wrap { background: var(--navy); overflow: hidden; white-space: nowrap; padding: 7px 0; flex-shrink: 0; border-bottom: 2px solid var(--gold); }
+  .ticker-track { display: inline-flex; animation: ticker-scroll linear infinite; }
+  .ticker-item { display: inline-block; padding: 0 36px; color: #fff; font-size: 12.5px; font-weight: 600; letter-spacing: .01em; }
+  @keyframes ticker-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
   .content { flex: 1; min-width: 0; overflow: auto; padding: 24px; }
 
   /* layout helpers */
@@ -320,6 +324,27 @@ async function loadUsers() {
     cabangId: u.cabang_id,
     gudangPusat: u.gudang_pusat_id
   }));
+}
+
+/**
+ * Load running-text announcements (iklan baris) shown under the topbar.
+ * Managed from the HQ-only "Info Berjalan" menu. Table may not exist yet
+ * in older deployments, so this fails soft (empty list) instead of
+ * breaking the whole app load.
+ */
+async function loadAnnouncements() {
+  try {
+    const data = await fetchAllRows('announcements', { orderBy: 'sort_order', ascending: true });
+    return data.map(a => ({
+      id: a.id,
+      text: a.text,
+      active: !!a.active,
+      sortOrder: a.sort_order
+    }));
+  } catch (e) {
+    console.warn("Tabel 'announcements' belum tersedia, iklan baris dinonaktifkan:", e && e.message ? e.message : e);
+    return [];
+  }
 }
 
 // ============================================================================
@@ -620,7 +645,7 @@ const state = {
 async function loadData() {
   try {
     // Load all data in parallel from normalized tables
-    const [products, warehouses, salesTeam, warehouseStock, salesStock, transactions, returItems, users] =
+    const [products, warehouses, salesTeam, warehouseStock, salesStock, transactions, returItems, users, announcements] =
       await Promise.all([
         loadProducts(),
         loadWarehouses(),
@@ -629,7 +654,8 @@ async function loadData() {
         loadSalesStock(),
         loadTransactions(),
         loadReturItems(),
-        loadUsers()
+        loadUsers(),
+        loadAnnouncements()
       ]);
 
     // Populate state with loaded data
@@ -641,7 +667,8 @@ async function loadData() {
       salesStock,
       transactions,
       returItems,
-      users
+      users,
+      announcements
     };
 
     // Initialize seed data if database is empty
@@ -1758,6 +1785,92 @@ async function deleteUser(userId) {
   }
 }
 
+// ---------------- Iklan baris / running text (HQ only) ----------------
+async function addAnnouncement(text) {
+  text = (text || "").trim();
+  if (!text) return notify("Isi teks iklan baris dulu", "error");
+  if (!isHQ()) return notify("Hanya Head Quarter yang bisa mengatur iklan baris", "error");
+
+  const maxOrder = state.data.announcements.reduce((m, a) => Math.max(m, a.sortOrder || 0), 0);
+  try {
+    const { error } = await sb.from('announcements').insert({
+      text: text, active: true, sort_order: maxOrder + 1
+    });
+    if (error) throw error;
+    await loadData();
+    render();
+    notify("Info berjalan ditambahkan");
+  } catch (e) {
+    console.error('addAnnouncement error:', e);
+    notify("Gagal menambahkan info berjalan: " + (e.message || e), "error");
+  }
+}
+async function updateAnnouncementText(id, text) {
+  text = (text || "").trim();
+  if (!text) return notify("Teks tidak boleh kosong", "error");
+  try {
+    const { error } = await sb.from('announcements').update({ text: text }).eq('id', id);
+    if (error) throw error;
+    await loadData();
+    render();
+    notify("Info berjalan diperbarui");
+  } catch (e) {
+    console.error('updateAnnouncementText error:', e);
+    notify("Gagal memperbarui: " + (e.message || e), "error");
+  }
+}
+async function toggleAnnouncementActive(id, currentActive) {
+  try {
+    const { error } = await sb.from('announcements').update({ active: !currentActive }).eq('id', id);
+    if (error) throw error;
+    await loadData();
+    render();
+  } catch (e) {
+    console.error('toggleAnnouncementActive error:', e);
+    notify("Gagal mengubah status: " + (e.message || e), "error");
+  }
+}
+async function deleteAnnouncement(id) {
+  try {
+    const { error } = await sb.from('announcements').delete().eq('id', id);
+    if (error) throw error;
+    await loadData();
+    render();
+    notify("Info berjalan dihapus");
+  } catch (e) {
+    console.error('deleteAnnouncement error:', e);
+    notify("Gagal menghapus: " + (e.message || e), "error");
+  }
+}
+async function moveAnnouncement(id, direction) {
+  const list = [...state.data.announcements].sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+  const idx = list.findIndex(a => a.id === id);
+  const swapIdx = idx + direction;
+  if (idx < 0 || swapIdx < 0 || swapIdx >= list.length) return;
+  const a = list[idx], b = list[swapIdx];
+  try {
+    const { error: e1 } = await sb.from('announcements').update({ sort_order: b.sortOrder }).eq('id', a.id);
+    if (e1) throw e1;
+    const { error: e2 } = await sb.from('announcements').update({ sort_order: a.sortOrder }).eq('id', b.id);
+    if (e2) throw e2;
+    await loadData();
+    render();
+  } catch (e) {
+    console.error('moveAnnouncement error:', e);
+    notify("Gagal mengubah urutan: " + (e.message || e), "error");
+  }
+}
+function onAddAnnouncement() {
+  const el = document.getElementById("announcement-text");
+  const text = el ? el.value : "";
+  addAnnouncement(text);
+  if (el) el.value = "";
+}
+function onEditAnnouncement(id) {
+  const el = document.getElementById("announcement-edit-" + id);
+  if (el) updateAnnouncementText(id, el.value);
+}
+
 // ---------------- computed ----------------
 function sumStockByType(type) {
   return state.data.warehouses.filter(w => w.type === type).reduce((acc, w) => {
@@ -2701,6 +2814,40 @@ function onAddUser() {
   addUser(username, password, name, role, cabangId, gudangPusat);
 }
 
+function renderAnnouncements() {
+  const list = [...(state.data.announcements||[])].sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+  return '<div class="stack">' +
+    '<div class="section"><div class="section-head"><h3>Tambah info berjalan</h3></div>' +
+      '<p class="muted" style="font-size:13px;color:#5d7a80">Teks di sini berjalan dari kanan ke kiri tepat di bawah kolom tanggal &amp; profil, di semua halaman &amp; untuk semua akun. Hanya info yang berstatus &quot;Aktif&quot; yang ditampilkan; jika lebih dari satu, semuanya digabung berurutan.</p>' +
+      '<div class="row" style="align-items:flex-end;gap:12px">' +
+        '<label class="field" style="flex:1"><span>Teks info / pengumuman</span><input class="input" id="announcement-text" placeholder="mis. Stok Gudang Pusat Bandung update per hari ini" onkeydown="if(event.key===\'Enter\')onAddAnnouncement()"></label>' +
+        '<button class="btn btn-primary" onclick="onAddAnnouncement()">+ Tambah</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="section"><div class="section-head"><h3>Daftar info berjalan (' + list.length + ')</h3></div>' +
+      (list.length ? (
+        '<table class="tbl"><thead><tr><th>Urutan</th><th>Teks</th><th>Status</th><th></th></tr></thead><tbody>' +
+        list.map((a, i) => (
+          '<tr>' +
+            '<td class="muted" style="white-space:nowrap">' +
+              '<button class="btn btn-ghost" style="padding:2px 8px" ' + (i===0?"disabled":"") + ' onclick="moveAnnouncement(\''+a.id+'\',-1)">&#8593;</button> ' +
+              '<button class="btn btn-ghost" style="padding:2px 8px" ' + (i===list.length-1?"disabled":"") + ' onclick="moveAnnouncement(\''+a.id+'\',1)">&#8595;</button>' +
+            '</td>' +
+            '<td style="min-width:280px"><input class="input" id="announcement-edit-'+a.id+'" value="'+esc(a.text)+'" style="width:100%" onkeydown="if(event.key===\'Enter\')onEditAnnouncement(\''+a.id+'\')"></td>' +
+            '<td>' + (a.active ? '<span class="badge badge-ok">&#10003; Aktif</span>' : '<span class="badge badge-stok">Nonaktif</span>') + '</td>' +
+            '<td style="white-space:nowrap">' +
+              '<button class="btn btn-ghost" style="padding:4px 10px" onclick="onEditAnnouncement(\''+a.id+'\')">Simpan</button> ' +
+              '<button class="btn btn-ghost" style="padding:4px 10px" onclick="toggleAnnouncementActive(\''+a.id+'\','+(a.active?"true":"false")+')">' + (a.active ? "Nonaktifkan" : "Aktifkan") + '</button> ' +
+              '<button class="btn btn-ghost" style="color:#b41a54;border-color:#fedeea;padding:4px 10px" onclick="deleteAnnouncement(\''+a.id+'\')">Hapus</button>' +
+            '</td>' +
+          '</tr>'
+        )).join("") +
+        '</tbody></table>'
+      ) : '<p class="muted">Belum ada info berjalan. Tambahkan lewat form di atas.</p>') +
+    '</div>' +
+  '</div>';
+}
+
 function renderRiwayat() {
   const rows = state.data.transactions.filter(t => (!state.ui.riwayatFilter || t.type===state.ui.riwayatFilter) && inPeriod(t.date));
   return '<div class="stack">' +
@@ -2734,11 +2881,13 @@ const TABS = [
   { id: "status", label: "Status Barang" },
   { id: "riwayat", label: "Riwayat Transaksi" },
   { id: "users", label: "Kelola Pengguna" },
+  { id: "announcements", label: "Info Berjalan" },
 ];
 function visibleTabs() {
   return TABS.filter(t => {
     if (t.id === "pusat") return isPusatOrHQ();
     if (t.id === "users") return isPusatOrHQ();
+    if (t.id === "announcements") return isHQ();
     return true;
   });
 }
@@ -2760,6 +2909,7 @@ const NAV_ICONS = {
   status: '<rect x="5" y="3" width="14" height="18" rx="2" fill="none"/><rect x="9" y="2" width="6" height="3" rx="1" fill="none"/><path d="M8 8.5l1.3 1.3L11.8 7.3M8 13.5l1.3 1.3 2.5-2.5M8 18.5l1.3 1.3 2.5-2.5" fill="none"/><path d="M13.5 9h3.5M13.5 14h3.5M13.5 19h3.5" fill="none"/>',
   riwayat: '<path d="M6 3h8l4 4v14H6Z" fill="none"/><path d="M14 3v4h4" fill="none"/><path d="M8.5 11h6M8.5 14h4" fill="none"/><circle cx="16" cy="17" r="3.4"/><path d="M16 15.5V17h1.3" fill="none"/>',
   users: '<circle cx="9" cy="8" r="3.2" fill="none"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0" fill="none"/><path d="M16 5.2a3.2 3.2 0 0 1 0 6.2M17.5 14a5.2 5.2 0 0 1 3.2 4.8" fill="none"/>',
+  announcements: '<path d="M3 10v4h3l5 4V6L6 10Z" fill="none"/><path d="M16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12" fill="none"/>',
 };
 function navIcon(id) {
   return '<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="#fff6f6" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + (NAV_ICONS[id]||"") + '</svg>';
@@ -2802,8 +2952,20 @@ function renderTabContent() {
     case "status": return renderStatusBarang();
     case "riwayat": return renderRiwayat();
     case "users": return isPusatOrHQ() ? renderKelolaPengguna() : renderDashboard();
+    case "announcements": return isHQ() ? renderAnnouncements() : renderDashboard();
     default: return "";
   }
+}
+
+function renderTicker() {
+  const items = (state.data.announcements || []).filter(a => a.active && (a.text || "").trim()).map(a => a.text.trim());
+  if (!items.length) return "";
+  const combined = items.join("      \u2022      ");
+  const durationSec = Math.max(18, Math.min(90, combined.length * 0.18));
+  return '<div class="ticker-wrap"><div class="ticker-track" style="animation-duration:' + durationSec + 's">' +
+    '<span class="ticker-item">' + esc(combined) + '</span>' +
+    '<span class="ticker-item">' + esc(combined) + '</span>' +
+  '</div></div>';
 }
 
 function render() {
@@ -2818,8 +2980,9 @@ function render() {
   if (!state.session) { root.innerHTML = renderLogin(); return; }
   if (isCabangAdmin() && state.tab === "pusat") state.tab = "dashboard";
   if (state.tab === "users" && !isPusatOrHQ()) state.tab = "dashboard";
+  if (state.tab === "announcements" && !isHQ()) state.tab = "dashboard";
   root.innerHTML = renderSidebar() +
-    '<div class="main">' + renderTopbar() + '<div class="content">' + renderTabContent() + '</div></div>';
+    '<div class="main">' + renderTopbar() + renderTicker() + '<div class="content">' + renderTabContent() + '</div></div>';
   if (state.tab === "cabang") renderAvailPusat();
   if (state.tab === "distribusi") renderDistAvail();
 }
