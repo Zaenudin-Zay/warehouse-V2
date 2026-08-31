@@ -707,7 +707,12 @@ async function restoreSession() {
   try {
     const { data: { session } } = await sb.auth.getSession();
     if (session && session.user) {
-      const profile = state.data.users.find(u => u.id === session.user.id);
+      let profile = state.data.users.find(u => u.id === session.user.id);
+      if (!profile) {
+        // Sama seperti doLogin: refresh kalau data awal sempat termuat sebelum sesi ke-restore
+        state.data.users = await loadUsers();
+        profile = state.data.users.find(u => u.id === session.user.id);
+      }
       if (profile) state.session = profile;
     }
   } catch (e) { console.error('restoreSession error:', e); }
@@ -1765,6 +1770,10 @@ async function doLogin() {
 
   const { data, error } = await sb.auth.signInWithPassword({ email: usernameToAuthEmail(username), password: password });
   if (error || !data.user) { state.ui.loginError = "Username atau password salah"; render(); return; }
+
+  // Muat ulang daftar user: request sebelumnya (sebelum login) jalan sebagai role "anon"
+  // yang diblokir RLS tabel profiles, jadi state.data.users bisa kosong/stale.
+  try { state.data.users = await loadUsers(); } catch (e) { console.error('reload users error:', e); }
 
   const profile = state.data.users.find(u => u.id === data.user.id);
   if (!profile) {
