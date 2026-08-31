@@ -10,17 +10,23 @@
 <style>
   :root {
     --red: #fb2576; --red-dark: #b41a54; --red-light: #fedeea;
-    --cream: #150050; --mint: #fc71a5; --mint-dark: #b41a54; --mint-light: #fee9f1;
-    --navy: #3f0071; --navy-dark: #000000; --navy-light: #eceaf1;
+    --cream: #f4f2fb; --mint: #fc71a5; --mint-dark: #b41a54; --mint-light: #fee9f1;
+    --navy: #3f0071; --navy-dark: #12002b; --navy-light: #eceaf1;
     --ink: #17002e; --ink-muted: #5d4d75; --border: #e2d8e9;
     --gold: #fb2576; --gold-dark: #b41a54;
+    --sidebar-top: #0c1b2a; --sidebar-bottom: #3f0071;
+    --accent-blue: #4c6ef5; --accent-purple: #7c4dff; --accent-pink: #ec4899;
+    --accent-teal: #14b8a6; --accent-green: #10b981; --accent-amber: #f59e0b;
   }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--cream); color: var(--ink); }
   #root { display: flex; min-height: 100vh; }
 
   /* sidebar */
-  .sidebar { width: 240px; flex-shrink: 0; background: var(--navy-dark); color: #c9b7d7; display: flex; flex-direction: column; padding: 20px 0; }
+  .sidebar { width: 240px; flex-shrink: 0; background: linear-gradient(180deg, var(--sidebar-top) 0%, var(--sidebar-bottom) 100%); color: #c9b7d7; display: flex; flex-direction: column; padding: 20px 0; transition: width .18s ease; }
+  .sidebar.collapsed { width: 76px; }
+  .sidebar.collapsed .sidebar-brand-title, .sidebar.collapsed .sidebar-brand-sub, .sidebar.collapsed .nav-item span, .sidebar.collapsed .profile-card-info { display: none; }
+  .sidebar.collapsed .nav-item { justify-content: center; }
   .sidebar-brand { padding: 16px 18px 16px; margin-bottom: 8px; border-bottom: 2px solid var(--gold); position: relative; }
   .sidebar-brand-row { display: flex; align-items: center; gap: 2px; }
   .sidebar-brand-title { color: #fff; font-weight: 700; font-size: 15px; line-height: 1.3; }
@@ -29,18 +35,36 @@
   .brand-wordmark { max-width: 122px; max-height: 30px; width: auto; height: auto; object-fit: contain; display: block; }
   .sidebar-brand-sub { font-size: 11px; font-weight: 700; letter-spacing: .02em; color: var(--mint); margin-top: 8px; }
   .nav { flex: 1; padding: 0 10px; display: flex; flex-direction: column; gap: 2px; }
-  .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 500; color: #c9b7d7; cursor: pointer; border: none; background: transparent; text-align: left; width: 100%; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 10px; font-size: 13px; font-weight: 500; color: #c9b7d7; cursor: pointer; border: none; background: transparent; text-align: left; width: 100%; }
   .nav-icon { width: 20px; height: 20px; flex-shrink: 0; }
-  .nav-item:hover { background: rgba(255,255,255,0.06); }
-  .nav-item.active { background: var(--red); color: #fff; }
-  .sidebar-foot { padding: 14px 20px 0; margin-top: 8px; border-top: 1px solid rgba(63,0,113,0.25); font-size: 11px; color: #9f7fb8; line-height: 1.6; }
+  .nav-item:hover { background: rgba(255,255,255,0.08); }
+  .nav-item.active { background: linear-gradient(135deg, var(--red), var(--mint)); color: #fff; box-shadow: 0 4px 14px rgba(251,37,118,.35); }
+  .sidebar-foot { padding: 12px 14px 0; margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.12); }
+  .profile-card { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; background: rgba(255,255,255,0.06); }
+  .profile-card-info { min-width: 0; flex: 1; }
+  .profile-card-name { color: #fff; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .profile-card-role { color: #c9b7d7; font-size: 10.5px; }
+  .profile-card-chevron { color: #c9b7d7; flex-shrink: 0; }
+  .sidebar-version { font-size: 10px; color: #9f7fb8; line-height: 1.6; padding: 10px 6px 0; text-align: center; }
 
   /* topbar */
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .topbar { height: 56px; flex-shrink: 0; background: #fff; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; }
-  .topbar-date { font-size: 13px; color: var(--ink-muted); }
+  .topbar { height: 56px; flex-shrink: 0; background: #fff; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; gap: 16px; }
+  .topbar-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+  .hamburger-btn { width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--border); background: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; color: var(--ink-muted); }
+  .hamburger-btn:hover { background: var(--navy-light); }
+  .topbar-date-wrap { display: flex; align-items: center; gap: 8px; color: var(--ink-muted); }
+  .topbar-date { font-size: 13px; color: var(--ink-muted); white-space: nowrap; }
+  .topbar-search { flex: 1; max-width: 420px; position: relative; display: none; }
+  @media (min-width: 900px) { .topbar-search { display: block; } }
+  .topbar-search input { width: 100%; border: 1px solid var(--border); background: var(--cream); border-radius: 999px; padding: 8px 14px 8px 36px; font-size: 13px; font-family: inherit; }
+  .topbar-search input:focus { outline: none; border-color: var(--mint); }
+  .topbar-search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--ink-muted); width: 15px; height: 15px; }
+  .topbar-right { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+  .bell-btn { position: relative; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border); background: #fff; display: flex; align-items: center; justify-content: center; color: var(--ink-muted); flex-shrink: 0; }
+  .bell-badge { position: absolute; top: -3px; right: -3px; background: var(--red); color: #fff; font-size: 9.5px; font-weight: 700; border-radius: 999px; min-width: 15px; height: 15px; display: flex; align-items: center; justify-content: center; padding: 0 3px; border: 2px solid #fff; }
   .pill-warning { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; background: #fdecc8; color: #92400e; padding: 5px 12px; border-radius: 999px; }
-  .ticker-wrap { background: var(--navy); overflow: hidden; white-space: nowrap; padding: 7px 0; flex-shrink: 0; border-bottom: 2px solid var(--gold); }
+  .ticker-wrap { background: linear-gradient(90deg, var(--sidebar-top), var(--navy)); overflow: hidden; white-space: nowrap; padding: 7px 0; flex-shrink: 0; border-bottom: 2px solid var(--gold); }
   .ticker-track { display: inline-flex; animation: ticker-scroll linear infinite; }
   .ticker-item { display: inline-block; padding: 0 36px; color: #fff; font-size: 12.5px; font-weight: 600; letter-spacing: .01em; }
   @keyframes ticker-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
@@ -57,12 +81,25 @@
   @media (max-width: 900px) { .grid-6 { grid-template-columns: repeat(2, minmax(0,1fr)); } .grid-2, .grid-2-1, .grid-3 { grid-template-columns: 1fr; } }
 
   /* cards */
-  .stat-card { border-radius: 12px; border: 1px solid var(--border); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; min-width: 0; background: #fff; }
+  .stat-card { border-radius: 14px; border: 1px solid var(--border); padding: 16px; display: flex; flex-direction: column; gap: 6px; min-width: 0; background: #fff; position: relative; overflow: hidden; }
+  .stat-card-head { display: flex; align-items: center; gap: 10px; }
+  .stat-icon-box { width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .stat-icon-box svg { width: 18px; height: 18px; }
+  .tone-indigo-box { background: linear-gradient(135deg,#7c4dff,#5b3fa0); color: #fff; }
+  .tone-blue-box { background: linear-gradient(135deg,#4c6ef5,#3b5bd9); color: #fff; }
+  .tone-slate-box { background: linear-gradient(135deg,#64748b,#475569); color: #fff; }
+  .tone-emerald-box { background: linear-gradient(135deg,#10b981,#059669); color: #fff; }
+  .tone-rose-box { background: linear-gradient(135deg,var(--red),var(--mint)); color: #fff; }
+  .tone-amber-box { background: linear-gradient(135deg,#f59e0b,#d97706); color: #fff; }
   .stat-card .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--ink-muted); }
-  .stat-card .value { font-size: 22px; font-weight: 600; color: var(--ink); }
+  .stat-card .value { font-size: 22px; font-weight: 700; color: var(--ink); }
   .stat-card .sub { font-size: 12px; color: var(--ink-muted); }
+  .stat-spark { width: 100%; height: 20px; margin-top: 2px; opacity: .55; }
+  .tone-indigo .stat-spark { color: var(--accent-purple); } .tone-blue .stat-spark { color: var(--accent-blue); }
+  .tone-slate .stat-spark { color: #64748b; } .tone-emerald .stat-spark { color: var(--accent-green); }
+  .tone-rose .stat-spark { color: var(--red); } .tone-amber .stat-spark { color: var(--accent-amber); }
   .tone-indigo { background: var(--navy-light); border-color: #c9b7d7; } .tone-indigo .label{color:var(--navy)}
-  .tone-blue { background: var(--mint-light); border-color: #fd9cc1; } .tone-blue .label{color:var(--mint-dark)}
+  .tone-blue { background: #eaf0fe; border-color: #c7d5fc; } .tone-blue .label{color:#3b5bd9}
   .tone-slate { background: #f7f4f9; border-color: var(--border); }
   .tone-emerald { background: #e8f7f0; border-color: #b8e8d2; } .tone-emerald .label{color:#0d7a4f}
   .tone-rose { background: var(--red-light); border-color: #ffc2c2; } .tone-rose .label{color:var(--red-dark)}
@@ -119,16 +156,21 @@
   code.inline { background: #f1f5f5; padding: 2px 5px; border-radius: 4px; font-size: 12px; }
 
   /* flow row */
+  .flow-section { background: linear-gradient(135deg, var(--sidebar-top), var(--navy)); border-radius: 16px; padding: 20px 22px; border: none; }
+  .flow-section .section-head h3 { color: #fff; }
   .flow-row { display: flex; align-items: center; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
-  .flow-node { flex-shrink: 0; border-radius: 10px; border: 1px solid #c9b7d7; background: var(--navy-light); padding: 10px 16px; min-width: 140px; }
-  .flow-node.rose { border-color: #ffc2c2; background: var(--red-light); }
-  .flow-node .lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--navy); opacity: .85; }
-  .flow-node.rose .lbl { color: var(--red-dark); }
-  .flow-arrow { flex-shrink: 0; color: #bba5cd; }
-  .flow-node .val { font-size: 17px; font-weight: 600; color: var(--navy-dark); }
-  .flow-node .sub { font-size: 11px; color: var(--navy); opacity: .8; margin-top: 1px; }
-  .flow-node.rose .val { color: #7a1010; }
-  .flow-node.rose .sub { color: var(--red-dark); }
+  .flow-node { flex-shrink: 0; border-radius: 12px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.07); padding: 12px 18px; min-width: 150px; }
+  .flow-node.rose { border-color: rgba(251,37,118,.4); background: linear-gradient(135deg, rgba(251,37,118,.22), rgba(252,113,165,.18)); }
+  .flow-node-icon { width: 26px; height: 26px; border-radius: 8px; background: rgba(255,255,255,.14); display: flex; align-items: center; justify-content: center; margin-bottom: 8px; color: #fff; }
+  .flow-node-icon svg { width: 15px; height: 15px; }
+  .flow-node.rose .flow-node-icon { background: rgba(255,255,255,.22); }
+  .flow-node .lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; color: #c9b7d7; opacity: .95; }
+  .flow-node.rose .lbl { color: #ffd6e6; }
+  .flow-arrow { flex-shrink: 0; color: rgba(255,255,255,.35); }
+  .flow-node .val { font-size: 18px; font-weight: 700; color: #fff; }
+  .flow-node .sub { font-size: 11px; color: #c9b7d7; opacity: .9; margin-top: 1px; }
+  .flow-node.rose .val { color: #fff; }
+  .flow-node.rose .sub { color: #ffd6e6; }
 
   /* toast */
   #toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; border-radius: 8px; color: #fff; font-size: 13px; font-weight: 500; box-shadow: 0 8px 20px rgba(21,0,80,.25); display: none; z-index: 50; }
@@ -418,7 +460,7 @@ function periodLabel() {
   const labels = { all: "Semua waktu", today: "Hari ini", "7d": "7 hari terakhir", "30d": "30 hari terakhir", month: "Bulan ini", year: "Tahun ini", custom: "Periode kustom" };
   return labels[state.ui.period] || "Semua waktu";
 }
-function renderPeriodFilter() {
+function renderPeriodFilter(showExport) {
   const p = state.ui.period;
   return '<div class="section" style="padding:14px 20px"><div class="row" style="justify-content:space-between">' +
     '<div class="row">' +
@@ -432,6 +474,7 @@ function renderPeriodFilter() {
         '<input type="date" class="input" value="'+esc(state.ui.periodTo)+'" onchange="onPeriodCustom(null, this.value)">'
       ) : "") +
     '</div>' +
+    (showExport ? '<button class="btn btn-primary" onclick="exportDashboardReport()">&#8681; Export Laporan</button>' : "") +
   '</div></div>';
 }
 function onPeriodChange(v) { state.ui.period = v; render(); }
@@ -669,7 +712,7 @@ const state = {
     allocationRows: [], allocationFileName: "", allocationGudang: "",
     period: "all", periodFrom: "", periodTo: "",
     stockStatusFilter: "all", salesStockStatusFilter: "all", stockBrandFilter: "",
-    profileMenuOpen: false, pwError: "", pwSuccess: "",
+    profileMenuOpen: false, pwError: "", pwSuccess: "", sidebarCollapsed: false,
     loginError: "", userForm: false },
 };
 
@@ -1509,6 +1552,33 @@ function downloadCSV(filename, headers, rows) {
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
+function exportDashboardReport() {
+  const clusterFilter = isHQ() ? state.ui.dashboardClusterFilter : myCluster();
+  const inCluster = (id) => !clusterFilter || locationCluster(id) === clusterFilter;
+  const priceMap = buildPriceMap();
+  const pusatWarehouses = state.data.warehouses.filter(w=>w.type==="pusat" && (!clusterFilter || warehouseCluster(w)===clusterFilter));
+  const cabangWarehouses = state.data.warehouses.filter(w=>w.type==="cabang" && (!clusterFilter || warehouseCluster(w)===clusterFilter));
+  const salesIds = clusterFilter ? state.data.salesTeam.filter(s=>locationCluster(s.id)===clusterFilter).map(s=>s.id) : Object.keys(state.data.salesStock);
+  const totalPusat = pusatWarehouses.reduce((acc,w)=>acc+Object.values(state.data.stock[w.id]||{}).reduce((a,b)=>a+b,0),0);
+  const totalCabang = cabangWarehouses.reduce((acc,w)=>acc+Object.values(state.data.stock[w.id]||{}).reduce((a,b)=>a+b,0),0);
+  const totalSales = salesIds.reduce((acc,id)=>acc+Object.values(state.data.salesStock[id]||{}).reduce((a,b)=>a+b,0),0);
+  const periodTx = state.data.transactions.filter(t => inPeriod(t.date));
+  const masukPeriode = periodTx.filter(t=>t.type==="masuk" && inCluster(t.to)).reduce((a,t)=>a+t.qty,0);
+  const terjualPeriode = periodTx.filter(t=>t.type==="penjualan" && inCluster(t.from)).reduce((a,t)=>a+t.qty,0);
+  const pendingQty = state.data.returItems.filter(r=>r.status==="menunggu_penggantian" && inCluster(r.sourceId)).reduce((a,r)=>a+r.qty,0);
+  const pLabel = periodLabel();
+  downloadCSV("laporan_dashboard_" + (clusterFilter||"nasional") + ".csv",
+    ["Metrik", "Periode", "Nilai (unit)"],
+    [
+      ["Stok Gudang Pusat", "-", totalPusat],
+      ["Stok Gudang Cabang", "-", totalCabang],
+      ["Stok di Tim Sales", "-", totalSales],
+      ["Masuk", pLabel, masukPeriode],
+      ["Terjual", pLabel, terjualPeriode],
+      ["Menunggu Penggantian", "-", pendingQty],
+    ]
+  );
+}
 function downloadXLSX(filename, headers, rows, sheetName) {
   const ws = XLSX.utils.aoa_to_sheet([headers].concat(rows));
   ws["!cols"] = headers.map((h, i) => {
@@ -2035,8 +2105,32 @@ function productOptions(selected) {
   });
   return html;
 }
+const TONE_ICON = {
+  indigo: '<path d="M4 11 12 4 20 11" fill="none"/><rect x="6" y="11" width="12" height="9" rx="1" fill="none"/><rect x="10" y="15" width="4" height="5" fill="none"/>',
+  blue: '<path d="M3 10 12 4 21 10" fill="none"/><rect x="4" y="10" width="16" height="9" rx="1" fill="none"/><rect x="7.5" y="13" width="3" height="3" fill="none"/><rect x="13.5" y="13" width="3" height="3" fill="none"/>',
+  slate: '<circle cx="9" cy="8" r="3.2" fill="none"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0" fill="none"/><path d="M16 5.2a3.2 3.2 0 0 1 0 6.2M17.5 14a5.2 5.2 0 0 1 3.2 4.8" fill="none"/>',
+  emerald: '<path d="M12 4v13M6 11l6 6 6-6" fill="none"/>',
+  rose: '<path d="M3 4h2l2.4 12.4a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.6L21 8H6.2" fill="none"/><circle cx="10" cy="20.5" r="1.4"/><circle cx="17" cy="20.5" r="1.4"/>',
+  amber: '<circle cx="12" cy="12" r="8.5" fill="none"/><path d="M12 7v5l3.2 2" fill="none"/>',
+};
+function seededSpark(seed) {
+  let h = 0;
+  for (let i=0;i<seed.length;i++) h = (h*31 + seed.charCodeAt(i)) >>> 0;
+  const pts = [];
+  for (let i=0;i<8;i++) { h = (h*1103515245 + 12345) >>> 0; pts.push(18 - ((h % 1000)/1000)*14); }
+  return pts.map((y,i)=> (i*14) + ',' + y.toFixed(1)).join(' ');
+}
 function statCard(label, value, tone, sub) {
-  return '<div class="stat-card tone-' + tone + '"><div class="label">' + esc(label) + '</div><div class="value">' + value + '</div>' + (sub ? '<div class="sub">'+esc(sub)+'</div>' : '') + '</div>';
+  const iconPath = TONE_ICON[tone] || TONE_ICON.slate;
+  const spark = seededSpark(label + value);
+  return '<div class="stat-card tone-' + tone + '">' +
+    '<div class="stat-card-head">' +
+      '<div class="stat-icon-box tone-' + tone + '-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + iconPath + '</svg></div>' +
+      '<div class="label">' + esc(label) + '</div>' +
+    '</div>' +
+    '<div class="value">' + value + '</div>' + (sub ? '<div class="sub">'+esc(sub)+'</div>' : '') +
+    '<svg class="stat-spark" viewBox="0 0 98 22" preserveAspectRatio="none"><polyline points="' + spark + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+  '</div>';
 }
 function transactionTable(rows, compact) {
   if (!rows.length) return '<p class="muted">Belum ada transaksi.</p>';
@@ -2245,7 +2339,7 @@ function renderDashboard() {
 
   const pLabel = periodLabel();
   return '<div class="stack">' +
-    renderPeriodFilter() +
+    renderPeriodFilter(true) +
     (isHQ() ? renderGudangPusatNasional(priceMap) : "") +
     '<div class="grid grid-6">' +
       statCard("Stok Gudang Pusat", nfmt(totalPusat), "indigo", rupiah(totalPusatValue)) +
@@ -2255,15 +2349,15 @@ function renderDashboard() {
       statCard("Terjual (" + pLabel + ")", nfmt(terjualPeriode), "rose", rupiah(terjualPeriodeValue)) +
       statCard("Menunggu Penggantian", nfmt(pendingQty), "amber", pendingReplacement.length + " laporan") +
     '</div>' +
-    '<div class="section"><div class="section-head"><h3>Alur perputaran barang</h3></div>' +
+    '<div class="section flow-section"><div class="section-head"><h3>Alur perputaran barang</h3></div>' +
       '<div class="flow-row">' +
-        '<div class="flow-node"><div class="lbl">Gudang Pusat</div><div class="val">'+nfmt(totalPusat)+'</div><div class="sub">'+rupiah(totalPusatValue)+'</div></div>' +
+        '<div class="flow-node"><div class="flow-node-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + TONE_ICON.indigo + '</svg></div><div class="lbl">Gudang Pusat</div><div class="val">'+nfmt(totalPusat)+'</div><div class="sub">'+rupiah(totalPusatValue)+'</div></div>' +
         '<span class="flow-arrow">&#8594;</span>' +
-        '<div class="flow-node"><div class="lbl">Gudang Cabang</div><div class="val">'+nfmt(totalCabang)+'</div><div class="sub">'+rupiah(totalCabangValue)+'</div></div>' +
+        '<div class="flow-node"><div class="flow-node-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + TONE_ICON.blue + '</svg></div><div class="lbl">Gudang Cabang</div><div class="val">'+nfmt(totalCabang)+'</div><div class="sub">'+rupiah(totalCabangValue)+'</div></div>' +
         '<span class="flow-arrow">&#8594;</span>' +
-        '<div class="flow-node"><div class="lbl">Tim Sales</div><div class="val">'+nfmt(totalSales)+'</div><div class="sub">'+rupiah(totalSalesValue)+'</div></div>' +
+        '<div class="flow-node"><div class="flow-node-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + TONE_ICON.slate + '</svg></div><div class="lbl">Tim Sales</div><div class="val">'+nfmt(totalSales)+'</div><div class="sub">'+rupiah(totalSalesValue)+'</div></div>' +
         '<span class="flow-arrow">&#8594;</span>' +
-        '<div class="flow-node rose"><div class="lbl">Terjual (' + pLabel + ')</div><div class="val">'+nfmt(terjualPeriode)+'</div><div class="sub">'+rupiah(terjualPeriodeValue)+'</div></div>' +
+        '<div class="flow-node rose"><div class="flow-node-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + TONE_ICON.rose + '</svg></div><div class="lbl">Terjual (' + pLabel + ')</div><div class="val">'+nfmt(terjualPeriode)+'</div><div class="sub">'+rupiah(terjualPeriodeValue)+'</div></div>' +
       '</div>' +
     '</div>' +
     (isHQ() ? "" :
@@ -3090,14 +3184,25 @@ function navIcon(id) {
 }
 
 function setTab(id) { state.tab = id; render(); }
+function toggleSidebar() { state.ui.sidebarCollapsed = !state.ui.sidebarCollapsed; render(); }
 
 function renderSidebar() {
-  return '<div class="sidebar">' +
+  const roleLabel = isHQ() ? "Head Quarter" :
+    isPusatAdmin() ? "Admin Pusat" :
+    "Admin Cabang";
+  return '<div class="sidebar' + (state.ui.sidebarCollapsed ? " collapsed" : "") + '">' +
     '<div class="sidebar-brand"><div class="sidebar-brand-row">' + BRAND_LOGO_SVG +
       '<div class="sidebar-brand-title"><img src="' + BRAND_LOGO_WORDMARK + '" alt="Inventory Management" class="brand-wordmark"><small>' + esc(isHQ() ? "All Cluster Nasional" : "Gudang Pusat") + '</small></div>' +
     '</div>' + (myCluster() ? '<div class="sidebar-brand-sub">' + esc(myCluster()) + '</div>' : '') + '</div>' +
     '<div class="nav">' + NAV_ICON_DEFS + visibleTabs().map(t => '<button class="nav-item' + (state.tab===t.id?" active":"") + '" onclick="setTab(\''+t.id+'\')">'+navIcon(t.id)+'<span>'+t.label+'</span></button>').join("") + '</div>' +
-    '<div class="sidebar-foot">Version 1.0<br>Copyright Reserved 2026<br>Pandawa Team</div>' +
+    '<div class="sidebar-foot">' +
+      '<div class="profile-card">' +
+        '<div class="avatar-btn" style="width:34px;height:34px">' + avatarHtml(state.session) + '</div>' +
+        '<div class="profile-card-info"><div class="profile-card-name">' + esc(state.session.name) + '</div><div class="profile-card-role">' + roleLabel + '</div></div>' +
+        '<svg class="profile-card-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>' +
+      '</div>' +
+      '<div class="sidebar-version">Version 1.0<br>Copyright Reserved 2026<br>Pandawa Team</div>' +
+    '</div>' +
   '</div>';
 }
 function renderTopbar() {
@@ -3105,9 +3210,18 @@ function renderTopbar() {
   const roleLabel = isHQ() ? "Head Quarter" :
     isPusatAdmin() ? "Admin Pusat" + (myGudangPusatId() ? " \u2013 " + esc((state.data.warehouses.find(w=>w.id===myGudangPusatId())||{}).name||"") : "") :
     "Admin Cabang" + (myCabangId() ? " \u2013 " + esc((state.data.warehouses.find(w=>w.id===myCabangId())||{}).name||"") : "");
-  return '<div class="topbar"><div class="topbar-date">' + new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"}) + '</div>' +
-    '<div class="row" style="gap:14px">' +
+  return '<div class="topbar">' +
+    '<div class="topbar-left">' +
+      '<button class="hamburger-btn" onclick="toggleSidebar()" title="Perkecil/perluas menu"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>' +
+      '<div class="topbar-date-wrap"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/></svg><span class="topbar-date">' + new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"}) + '</span></div>' +
+      '<div class="topbar-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input placeholder="Cari menu atau data..." readonly onclick="notify(\'Fitur pencarian menyusul\',\'success\')"></div>' +
+    '</div>' +
+    '<div class="topbar-right">' +
     (pending>0 ? '<span class="pill-warning">&#9888; ' + pending + ' item menunggu penggantian principal</span>' : '') +
+    '<button class="bell-btn" title="Notifikasi" onclick="setTab(\'status\')">' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 4.5 1.5 6 2 7H4c.5-1 2-2.5 2-7Z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>' +
+      (pending>0 ? '<span class="bell-badge">' + (pending>9?"9+":pending) + '</span>' : "") +
+    '</button>' +
     '<div class="profile-wrap">' +
       '<button class="avatar-btn" onclick="toggleProfileMenu()" title="Menu profil">' + avatarHtml(state.session) + '</button>' +
       (state.ui.profileMenuOpen ? renderProfileMenu(roleLabel) : "") +
