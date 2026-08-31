@@ -98,6 +98,7 @@
   .badge-penjualan { background: var(--red-light); color: var(--red-dark); }
   .badge-retur { background: #fdf3dc; color: #92400e; }
   .badge-ganti { background: #d7f2ee; color: var(--navy-dark); }
+  .badge-produksi { background: #e6ddf9; color: #5b3fa0; }
   .badge-stok { background: #f1f5f5; color: var(--ink-muted); }
   .badge-ok { background: #d7f2e6; color: #0d7a4f; }
   .badge-err { background: var(--red-light); color: var(--red-dark); }
@@ -832,6 +833,71 @@ async function transferWarehouse(fromId, toId, productId, qty) {
   } catch (e) {
     console.error('transferWarehouse error:', e);
     notify("Gagal transfer: " + (e.message || e), "error");
+  }
+}
+
+async function produksiConversion(warehouseId, bahanId, hasilId, qty, note) {
+  if (!warehouseId || !bahanId || !hasilId || !qty || qty <= 0)
+    return notify("Lengkapi bahan, hasil produksi dan jumlah", "error");
+
+  if (bahanId === hasilId)
+    return notify("Bahan dan hasil produksi harus produk berbeda", "error");
+
+  const avail = state.data.stock[warehouseId]?.[bahanId] || 0;
+  if (qty > avail)
+    return notify("Stok bahan tidak cukup (tersedia " + avail + ")", "error");
+
+  const bahan = state.data.products.find(p=>p.id===bahanId);
+  const hasil = state.data.products.find(p=>p.id===hasilId);
+
+  try {
+    // 1. Insert transaksi keluar (bahan berkurang)
+    const { error: txKeluarError } = await sb.from('transactions').insert({
+      id: uid('trx'),
+      type: 'produksi_keluar',
+      date: new Date().toISOString(),
+      from_location: warehouseId,
+      product_id: bahanId,
+      qty: qty,
+      note: note || ('Produksi menjadi ' + (hasil ? hasil.name : hasilId))
+    });
+    if (txKeluarError) throw txKeluarError;
+
+    // 2. Insert transaksi masuk (hasil bertambah)
+    const { error: txMasukError } = await sb.from('transactions').insert({
+      id: uid('trx'),
+      type: 'produksi_masuk',
+      date: new Date().toISOString(),
+      to_location: warehouseId,
+      product_id: hasilId,
+      qty: qty,
+      note: note || ('Hasil produksi dari ' + (bahan ? bahan.name : bahanId))
+    });
+    if (txMasukError) throw txMasukError;
+
+    // 3. Kurangi stok bahan
+    const { error: bahanError } = await sb.from('warehouse_stock').upsert({
+      warehouse_id: warehouseId,
+      product_id: bahanId,
+      quantity: avail - qty
+    }, { onConflict: 'warehouse_id,product_id' });
+    if (bahanError) throw bahanError;
+
+    // 4. Tambah stok hasil produksi
+    const hasilQty = state.data.stock[warehouseId]?.[hasilId] || 0;
+    const { error: hasilError } = await sb.from('warehouse_stock').upsert({
+      warehouse_id: warehouseId,
+      product_id: hasilId,
+      quantity: hasilQty + qty
+    }, { onConflict: 'warehouse_id,product_id' });
+    if (hasilError) throw hasilError;
+
+    await loadData();
+    render();
+    notify("Produksi berhasil: " + nfmt(qty) + " unit diubah");
+  } catch (e) {
+    console.error('produksiConversion error:', e);
+    notify("Gagal produksi: " + (e.message || e), "error");
   }
 }
 
@@ -1891,6 +1957,7 @@ const TYPE_LABEL = {
   distribusi: ["Distribusi ke sales","badge-distribusi"], penjualan: ["Penjualan","badge-penjualan"],
   retur_keluar: ["Laporan bermasalah","badge-retur"], penggantian_masuk: ["Penggantian principal","badge-ganti"],
   stok_awal: ["Update stok awal","badge-stok"],
+  produksi_keluar: ["Produksi (bahan)","badge-produksi"], produksi_masuk: ["Produksi (hasil)","badge-produksi"],
 };
 
 // ---------------- small render helpers ----------------
@@ -2235,6 +2302,16 @@ function renderGudangPusat() {
         '</div>' +
       '</div>' +
     '</div>' +
+    '<div class="section"><div class="section-head"><h3>Produksi</h3></div>' +
+      '<p class="muted" style="font-size:13px;color:#5d7a80">Ubah bahan (Kartu Perdana/Voucher) menjadi produk jadi yang berbeda, mis. SP XL 10K &#8594; Perdana XL 3GB 30hr. Stok bahan otomatis berkurang, stok hasil produksi otomatis bertambah di gudang ini.</p>' +
+      '<div class="row" style="align-items:flex-end">' +
+        '<label class="field" style="min-width:220px"><span>Bahan (produk asal)</span>' + productPickerHTML("pusat-produksi-bahan", ()=>renderProduksiBahanAvail("pusat")) + '</label>' +
+        '<label class="field" style="min-width:220px"><span>Hasil produksi (produk jadi)</span>' + productPickerHTML("pusat-produksi-hasil") + '</label>' +
+        '<label class="field"><span>Jumlah</span><input class="input" type="number" min="1" id="pusat-produksi-qty" placeholder="Jumlah unit"></label>' +
+        '<button class="btn btn-primary" ' + (selected?"":"disabled") + ' onclick="onProduksi(\'pusat\')">&#9881; Produksi</button>' +
+      '</div>' +
+      '<div class="muted" id="pusat-produksi-avail" style="margin-top:8px">Stok bahan tersedia: 0</div>' +
+    '</div>' +
   '</div>';
 }
 function onPusatSelect(id) { state.ui.pusatSelected = id; render(); }
@@ -2290,6 +2367,16 @@ function renderGudangCabang() {
         '</div>' +
       '</div>' +
     '</div>' +
+    '<div class="section"><div class="section-head"><h3>Produksi</h3></div>' +
+      '<p class="muted" style="font-size:13px;color:#5d7a80">Ubah bahan (Kartu Perdana/Voucher) menjadi produk jadi yang berbeda, mis. SP XL 10K &#8594; Perdana XL 3GB 30hr. Stok bahan otomatis berkurang, stok hasil produksi otomatis bertambah di gudang ini.</p>' +
+      '<div class="row" style="align-items:flex-end">' +
+        '<label class="field" style="min-width:220px"><span>Bahan (produk asal)</span>' + productPickerHTML("cabang-produksi-bahan", ()=>renderProduksiBahanAvail("cabang")) + '</label>' +
+        '<label class="field" style="min-width:220px"><span>Hasil produksi (produk jadi)</span>' + productPickerHTML("cabang-produksi-hasil") + '</label>' +
+        '<label class="field"><span>Jumlah</span><input class="input" type="number" min="1" id="cabang-produksi-qty" placeholder="Jumlah unit"></label>' +
+        '<button class="btn btn-primary" ' + (selected?"":"disabled") + ' onclick="onProduksi(\'cabang\')">&#9881; Produksi</button>' +
+      '</div>' +
+      '<div class="muted" id="cabang-produksi-avail" style="margin-top:8px">Stok bahan tersedia: 0</div>' +
+    '</div>' +
   '</div>';
 }
 function onCabangSelect(id) { state.ui.cabangSelected = id; render(); }
@@ -2312,6 +2399,20 @@ function onTransferCabang() {
   const productId = document.getElementById("cabang-produk").value;
   const qty = Number(document.getElementById("cabang-qty").value);
   transferWarehouse(pusatId, state.ui.cabangSelected, productId, qty);
+}
+function renderProduksiBahanAvail(scope) {
+  const warehouseId = scope === "pusat" ? state.ui.pusatSelected : state.ui.cabangSelected;
+  const bahanId = document.getElementById(scope + "-produksi-bahan").value;
+  const avail = (state.data.stock[warehouseId]||{})[bahanId] || 0;
+  const el = document.getElementById(scope + "-produksi-avail");
+  if (el) el.textContent = "Stok bahan tersedia: " + nfmt(avail);
+}
+function onProduksi(scope) {
+  const warehouseId = scope === "pusat" ? state.ui.pusatSelected : state.ui.cabangSelected;
+  const bahanId = document.getElementById(scope + "-produksi-bahan").value;
+  const hasilId = document.getElementById(scope + "-produksi-hasil").value;
+  const qty = Number(document.getElementById(scope + "-produksi-qty").value);
+  produksiConversion(warehouseId, bahanId, hasilId, qty);
 }
 
 function renderDistribusi() {
@@ -2862,6 +2963,8 @@ function renderRiwayat() {
       '<option value="retur_keluar"' + (state.ui.riwayatFilter==="retur_keluar"?" selected":"") + '>Laporan bermasalah</option>' +
       '<option value="penggantian_masuk"' + (state.ui.riwayatFilter==="penggantian_masuk"?" selected":"") + '>Penggantian principal</option>' +
       '<option value="stok_awal"' + (state.ui.riwayatFilter==="stok_awal"?" selected":"") + '>Update stok awal</option>' +
+      '<option value="produksi_keluar"' + (state.ui.riwayatFilter==="produksi_keluar"?" selected":"") + '>Produksi (bahan)</option>' +
+      '<option value="produksi_masuk"' + (state.ui.riwayatFilter==="produksi_masuk"?" selected":"") + '>Produksi (hasil)</option>' +
     '</select></div>' +
     transactionTable(rows, false) +
     '</div>' +
