@@ -863,7 +863,7 @@ function downloadAllocationTemplate() {
     ["JB-Tangerang", "SF-26020911", "2602006161", "SP Smartfren", 4],
     ["JB-Tangerang", "SF-26045221", "2603000001", "PV Smartfren Reguler", 16],
   ];
-  downloadCSV("template_allocation_log.csv", headers, rows);
+  downloadXLSX("template_allocation_log.xlsx", headers, rows, "Allocation Log");
   notify("Template Input Allocation Log diunduh.");
 }
 function buildAllocationRows(dataRows) {
@@ -1386,6 +1386,16 @@ function downloadCSV(filename, headers, rows) {
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+function downloadXLSX(filename, headers, rows, sheetName) {
+  const ws = XLSX.utils.aoa_to_sheet([headers].concat(rows));
+  ws["!cols"] = headers.map((h, i) => {
+    const maxLen = Math.max(String(h).length, ...rows.map(r => String(r[i] ?? "").length));
+    return { wch: Math.min(Math.max(maxLen + 2, 10), 40) };
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName || "Sheet1");
+  XLSX.writeFile(wb, filename);
 }
 function downloadStockTemplate() {
   const headers = ["Sales Cluster", "Product ID", "Product Name", "Stok Awal", "Keterangan"];
@@ -2227,7 +2237,7 @@ function renderDistribusi() {
   '<div class="section" style="margin-top:20px"><div class="section-head"><h3>Input Allocation Log</h3>' +
       '<button class="btn btn-ghost" onclick="downloadAllocationTemplate()">&#8681; Download template</button>' +
     '</div>' +
-    '<p class="muted" style="font-size:13px;color:#5d7a80">Upload file export allocation log (<code class="inline">.xlsx</code> atau <code class="inline">.csv</code>) untuk distribusi massal ke banyak sales sekaligus. Kolom <code class="inline">Canvasser ID</code> dipakai sebagai sales tujuan, <code class="inline">Product ID</code> sebagai produk, dan <code class="inline">Total</code> sebagai jumlah. Baris dengan Canvasser ID + Product ID yang sama otomatis dijumlahkan.</p>' +
+    '<p class="muted" style="font-size:13px;color:#5d7a80">Upload file allocation log (<code class="inline">.xlsx</code> atau <code class="inline">.csv</code>) untuk distribusi massal ke banyak sales sekaligus — download template di atas (format .xlsx). Kolom <code class="inline">Canvasser ID</code> dipakai sebagai sales tujuan, <code class="inline">Product ID</code> sebagai produk, dan <code class="inline">Total</code> sebagai jumlah. Baris dengan Canvasser ID + Product ID yang sama otomatis dijumlahkan.</p>' +
     '<div class="row" style="align-items:flex-end;gap:12px">' +
       '<label class="field"><span>Gudang asal</span><select class="input" id="alloc-gudang" onchange="onAllocationGudangChange(this.value)"><option value="">Pilih gudang</option>' + warehouseOptions.map(w=>'<option value="'+w.id+'"'+(w.id===state.ui.allocationGudang?" selected":"")+'>'+esc(w.name)+'</option>').join("") + '</select></label>' +
       '<label class="field"><span>File</span><input type="file" accept=".csv,.xlsx,.xls" onchange="handleAllocationFile(this)"></label>' +
