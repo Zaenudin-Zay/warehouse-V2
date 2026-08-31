@@ -2156,7 +2156,7 @@ function barListHtml(items) {
 
 // ---------------- tab renderers ----------------
 function renderDashboard() {
-  const clusterFilter = isHQ() ? state.ui.dashboardClusterFilter : "";
+  const clusterFilter = isHQ() ? state.ui.dashboardClusterFilter : myCluster();
   const inCluster = (id) => !clusterFilter || locationCluster(id) === clusterFilter;
   const priceMap = buildPriceMap();
 
