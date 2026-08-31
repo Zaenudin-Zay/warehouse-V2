@@ -145,6 +145,27 @@
   .login-hint { font-size: 11px; color: #b69ec9; margin-top: 16px; line-height: 1.6; }
   .user-badge { display: flex; flex-direction: column; align-items: flex-end; font-size: 11px; color: var(--ink-muted); line-height: 1.4; }
   .user-badge strong { color: var(--ink); font-size: 12.5px; }
+
+  /* profile menu */
+  .profile-wrap { position: relative; }
+  .avatar-btn { width: 38px; height: 38px; border-radius: 50%; border: 2px solid var(--border); padding: 0; cursor: pointer; background: var(--navy); overflow: hidden; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .avatar-btn img { width: 100%; height: 100%; object-fit: cover; }
+  .avatar-btn .initials { color: #fff; font-size: 13px; font-weight: 700; letter-spacing: .02em; }
+  .avatar-btn:hover { border-color: var(--mint); }
+  .profile-menu { position: absolute; top: calc(100% + 10px); right: 0; width: 300px; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 30px rgba(28,69,82,.18); padding: 18px; z-index: 60; }
+  .profile-menu-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .avatar-lg { width: 56px; height: 56px; border-radius: 50%; background: var(--navy); overflow: hidden; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .avatar-lg img { width: 100%; height: 100%; object-fit: cover; }
+  .avatar-lg .initials { color: #fff; font-size: 19px; font-weight: 700; }
+  .profile-menu-name { font-size: 14px; font-weight: 600; color: var(--ink); }
+  .profile-menu-role { font-size: 12px; color: var(--ink-muted); }
+  .profile-menu hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+  .profile-menu-label { font-size: 11px; font-weight: 600; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 8px; }
+  .link-btn { background: none; border: none; padding: 0; font-size: 12.5px; font-weight: 600; color: var(--navy); cursor: pointer; }
+  .link-btn:hover { text-decoration: underline; }
+  .profile-menu .field { margin-bottom: 8px; }
+  .profile-menu .btn { width: 100%; justify-content: center; }
+  .readonly-box { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 13px; color: var(--ink-muted); background: #f7fafa; }
   .toast-success { background: #0d7a4f; } .toast-error { background: var(--red); } .toast-warning { background: #b45309; }
 
   .bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; }
@@ -325,7 +346,8 @@ async function loadUsers() {
     name: u.name,
     role: u.role,
     cabangId: u.cabang_id,
-    gudangPusat: u.gudang_pusat_id
+    gudangPusat: u.gudang_pusat_id,
+    avatarUrl: u.avatar_url || ""
   }));
 }
 
@@ -419,6 +441,16 @@ function onPeriodCustom(from, to) {
   render();
 }
 function esc(s) { return (s ?? "").toString().replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+function initials(name) {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "?";
+  if (parts.length === 1) return parts[0].slice(0,2).toUpperCase();
+  return (parts[0][0] + parts[parts.length-1][0]).toUpperCase();
+}
+function avatarHtml(user, sizeClass) {
+  if (user && user.avatarUrl) return '<img src="' + user.avatarUrl + '" alt="foto profil">';
+  return '<span class="initials">' + esc(initials(user ? user.name : "")) + '</span>';
+}
 function nfmt(n) { return Number(n || 0).toLocaleString("id-ID"); }
 function rupiah(n) { return "Rp " + nfmt(Math.round(n || 0)); }
 function buildPriceMap() {
@@ -637,6 +669,7 @@ const state = {
     allocationRows: [], allocationFileName: "", allocationGudang: "",
     period: "all", periodFrom: "", periodTo: "",
     stockStatusFilter: "all", salesStockStatusFilter: "all", stockBrandFilter: "",
+    profileMenuOpen: false, pwError: "", pwSuccess: "",
     loginError: "", userForm: false },
 };
 
@@ -3075,10 +3108,129 @@ function renderTopbar() {
   return '<div class="topbar"><div class="topbar-date">' + new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"}) + '</div>' +
     '<div class="row" style="gap:14px">' +
     (pending>0 ? '<span class="pill-warning">&#9888; ' + pending + ' item menunggu penggantian principal</span>' : '') +
-    '<div class="user-badge"><strong>' + esc(state.session.name) + '</strong><span>' + roleLabel + '</span></div>' +
-    '<button class="btn btn-ghost" onclick="doLogout()">Keluar</button>' +
+    '<div class="profile-wrap">' +
+      '<button class="avatar-btn" onclick="toggleProfileMenu()" title="Menu profil">' + avatarHtml(state.session) + '</button>' +
+      (state.ui.profileMenuOpen ? renderProfileMenu(roleLabel) : "") +
+    '</div>' +
     '</div>' +
   '</div>';
+}
+function renderProfileMenu(roleLabel) {
+  return '<div class="profile-menu" onclick="event.stopPropagation()">' +
+    '<div class="profile-menu-head">' +
+      '<div class="avatar-lg">' + avatarHtml(state.session) + '</div>' +
+      '<div><div class="profile-menu-name">' + esc(state.session.name) + '</div><div class="profile-menu-role">' + roleLabel + '</div></div>' +
+    '</div>' +
+    '<input type="file" id="avatar-file-input" accept="image/*" style="display:none" onchange="onAvatarFileChange(this)">' +
+    '<div class="row" style="gap:14px;margin-bottom:14px">' +
+      '<button class="link-btn" onclick="document.getElementById(\'avatar-file-input\').click()">Ganti foto profil</button>' +
+      (state.session.avatarUrl ? '<button class="link-btn" style="color:#b91414" onclick="removeAvatar()">Hapus foto</button>' : '') +
+    '</div>' +
+    '<hr>' +
+    '<div class="profile-menu-label">Username</div>' +
+    '<div class="readonly-box" style="margin-bottom:14px">' + esc(state.session.username) + '</div>' +
+    '<div class="profile-menu-label">Ganti password</div>' +
+    (state.ui.pwError ? '<div class="login-error" style="margin-bottom:8px">' + esc(state.ui.pwError) + '</div>' : "") +
+    (state.ui.pwSuccess ? '<div style="background:#e8f7f0;color:#0d7a4f;font-size:12.5px;padding:8px 12px;border-radius:8px;margin-bottom:8px">' + esc(state.ui.pwSuccess) + '</div>' : "") +
+    '<label class="field"><span>Password lama</span><input class="input" type="password" id="pw-old" placeholder="Password saat ini"></label>' +
+    '<label class="field"><span>Password baru</span><input class="input" type="password" id="pw-new" placeholder="Minimal 6 karakter"></label>' +
+    '<label class="field"><span>Ulangi password baru</span><input class="input" type="password" id="pw-confirm" placeholder="Ulangi password baru"></label>' +
+    '<button class="btn btn-primary" style="margin-top:6px" onclick="onChangePassword()">Simpan password</button>' +
+    '<hr>' +
+    '<button class="btn btn-ghost" onclick="doLogout()">Keluar</button>' +
+  '</div>';
+}
+function toggleProfileMenu() {
+  state.ui.profileMenuOpen = !state.ui.profileMenuOpen;
+  state.ui.pwError = ""; state.ui.pwSuccess = "";
+  render();
+  if (state.ui.profileMenuOpen) {
+    setTimeout(() => { document.addEventListener("click", closeProfileMenuOnce, { once: true }); }, 0);
+  }
+}
+function closeProfileMenuOnce() {
+  if (state.ui.profileMenuOpen) { state.ui.profileMenuOpen = false; render(); }
+}
+function resizeImageToDataUrl(file, maxSize, cb) {
+  const img = new Image();
+  const reader = new FileReader();
+  reader.onload = () => {
+    img.onload = () => {
+      const side = Math.min(img.width, img.height);
+      const sx = (img.width - side) / 2, sy = (img.height - side) / 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = maxSize; canvas.height = maxSize;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, sx, sy, side, side, 0, 0, maxSize, maxSize);
+      cb(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+}
+function onAvatarFileChange(inputEl) {
+  const file = inputEl.files && inputEl.files[0];
+  if (!file) return;
+  if (!file.type.startsWith("image/")) return notify("File harus berupa gambar", "error");
+  resizeImageToDataUrl(file, 160, (dataUrl) => updateAvatar(dataUrl));
+}
+async function updateAvatar(dataUrl) {
+  try {
+    const { error } = await sb.from("profiles").update({ avatar_url: dataUrl }).eq("id", state.session.id);
+    if (error) throw error;
+    state.session.avatarUrl = dataUrl;
+    const u = state.data.users.find(x => x.id === state.session.id);
+    if (u) u.avatarUrl = dataUrl;
+    render();
+    notify("Foto profil berhasil diperbarui");
+  } catch (e) {
+    console.error("updateAvatar error:", e);
+    notify("Gagal mengubah foto profil: " + (e.message || e), "error");
+  }
+}
+async function removeAvatar() {
+  try {
+    const { error } = await sb.from("profiles").update({ avatar_url: null }).eq("id", state.session.id);
+    if (error) throw error;
+    state.session.avatarUrl = "";
+    const u = state.data.users.find(x => x.id === state.session.id);
+    if (u) u.avatarUrl = "";
+    render();
+    notify("Foto profil dihapus");
+  } catch (e) {
+    console.error("removeAvatar error:", e);
+    notify("Gagal menghapus foto profil: " + (e.message || e), "error");
+  }
+}
+async function onChangePassword() {
+  const oldPw = (document.getElementById("pw-old")||{}).value || "";
+  const newPw = (document.getElementById("pw-new")||{}).value || "";
+  const confirmPw = (document.getElementById("pw-confirm")||{}).value || "";
+  state.ui.pwSuccess = "";
+
+  if (!oldPw || !newPw || !confirmPw) { state.ui.pwError = "Semua kolom wajib diisi"; render(); return; }
+  if (newPw.length < 6) { state.ui.pwError = "Password baru minimal 6 karakter"; render(); return; }
+  if (newPw !== confirmPw) { state.ui.pwError = "Konfirmasi password baru tidak cocok"; render(); return; }
+
+  try {
+    const { error: reauthErr } = await sb.auth.signInWithPassword({
+      email: usernameToAuthEmail(state.session.username),
+      password: oldPw
+    });
+    if (reauthErr) { state.ui.pwError = "Password lama salah"; render(); return; }
+
+    const { error: updateErr } = await sb.auth.updateUser({ password: newPw });
+    if (updateErr) throw updateErr;
+
+    state.ui.pwError = "";
+    state.ui.pwSuccess = "Password berhasil diubah";
+    ["pw-old","pw-new","pw-confirm"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+    render();
+  } catch (e) {
+    console.error("onChangePassword error:", e);
+    state.ui.pwError = "Gagal mengubah password: " + (e.message || e);
+    render();
+  }
 }
 
 function renderTabContent() {
