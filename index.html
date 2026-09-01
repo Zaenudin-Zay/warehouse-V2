@@ -977,7 +977,7 @@ async function produksiConversion(warehouseId, bahanId, hasilId, qty, note) {
   }
 }
 
-async function distribusiToSales(warehouseId, salesId, productId, qty) {
+async function distribusiToSales(warehouseId, salesId, productId, qty, tanggal) {
   if (!warehouseId || !salesId || !productId || !qty || qty <= 0)
     return notify("Lengkapi gudang asal, sales, produk dan jumlah", "error");
 
@@ -990,7 +990,7 @@ async function distribusiToSales(warehouseId, salesId, productId, qty) {
     const { error: txError } = await sb.from('transactions').insert({
       id: uid('trx'),
       type: 'distribusi',
-      date: new Date().toISOString(),
+      date: txDateISO(tanggal),
       from_location: warehouseId,
       to_location: salesId,
       product_id: productId,
@@ -1027,10 +1027,10 @@ async function distribusiToSales(warehouseId, salesId, productId, qty) {
 
 // ---------------- Input Allocation Log (bulk distribusi ke sales) ----------------
 function downloadAllocationTemplate() {
-  const headers = ["Sales Cluster", "Canvasser ID", "Product ID", "Product Name", "Total"];
+  const headers = ["Tanggal", "Sales Cluster", "Canvasser ID", "Product ID", "Product Name", "Total"];
   const rows = [
-    ["JB-Tangerang", "SF-26020911", "2602006161", "SP Smartfren", 4],
-    ["JB-Tangerang", "SF-26045221", "2603000001", "PV Smartfren Reguler", 16],
+    [todayStr(), "JB-Tangerang", "SF-26020911", "2602006161", "SP Smartfren", 4],
+    [todayStr(), "JB-Tangerang", "SF-26045221", "2603000001", "PV Smartfren Reguler", 16],
   ];
   downloadXLSX("template_allocation_log.xlsx", headers, rows, "Allocation Log");
   notify("Template Input Allocation Log diunduh.");
@@ -1042,9 +1042,10 @@ function buildAllocationRows(dataRows) {
     const productId = pickField(r, ["Product ID","product id","kode produk","sku"]).toString().trim();
     const totalRaw = pickField(r, ["Total","qty","jumlah","total product"]);
     const qty = parseInt((totalRaw||"0").toString().replace(/[^0-9-]/g,""), 10) || 0;
+    const tanggal = parseDateField(r, ["Tanggal","tanggal","date","tanggal transaksi"]) || todayStr();
     if (!canvasserId && !productId) return;
-    const key = canvasserId + "||" + productId;
-    if (!groups[key]) groups[key] = { canvasserId, productId, qty: 0 };
+    const key = canvasserId + "||" + productId + "||" + tanggal;
+    if (!groups[key]) groups[key] = { canvasserId, productId, tanggal, qty: 0 };
     groups[key].qty += qty;
   });
 
@@ -1065,7 +1066,7 @@ function buildAllocationRows(dataRows) {
       else runningStock[g.productId] -= g.qty;
     }
     return {
-      key: i, qty: g.qty,
+      key: i, qty: g.qty, tanggal: g.tanggal,
       salesId: g.canvasserId, salesName: sales ? sales.name : g.canvasserId,
       productId: g.productId, productName: prod ? prod.name : g.productId,
       status, issue,
@@ -1085,7 +1086,7 @@ function handleAllocationFile(input) {
   } else {
     const reader = new FileReader();
     reader.onload = (e) => {
-      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
+      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
       state.ui.allocationRows = buildAllocationRows(rows);
@@ -1097,7 +1098,7 @@ function handleAllocationFile(input) {
 function onAllocationGudangChange(v) {
   state.ui.allocationGudang = v;
   if (state.ui.allocationRows.length) state.ui.allocationRows = buildAllocationRows(state.ui.allocationRows.map(r => ({
-    "Canvasser ID": r.salesId, "Product ID": r.productId, "Total": r.qty
+    "Canvasser ID": r.salesId, "Product ID": r.productId, "Total": r.qty, "Tanggal": r.tanggal
   })));
   render();
 }
@@ -1139,7 +1140,7 @@ async function applyAllocationImport() {
       throw new Error("Stok sales hanya " + (salesData?salesData.length:0) + "/" + salesPayload.length + " baris tersimpan (kemungkinan diblokir izin akses Supabase)");
 
     const txPayload = rows.map(r => ({
-      id: uid('trx'), type: 'distribusi', date: new Date().toISOString(),
+      id: uid('trx'), type: 'distribusi', date: txDateISO(r.tanggal),
       from_location: gudangId, to_location: r.salesId, product_id: r.productId, qty: r.qty,
       note: 'Input Allocation Log'
     }));
@@ -1429,7 +1430,7 @@ async function applySalesUpload() {
       const { error: txError } = await sb.from('transactions').insert({
         id: uid('trx'),
         type: 'penjualan',
-        date: new Date().toISOString(),
+        date: txDateISO(r.tanggal),
         from_location: r.salesId,
         product_id: r.productId,
         qty: r.qty,
@@ -2597,7 +2598,7 @@ function renderDistribusi() {
   return '<div class="section"><div class="section-head"><h3>Input Allocation Log</h3>' +
       '<button class="btn btn-ghost" onclick="downloadAllocationTemplate()">&#8681; Download template</button>' +
     '</div>' +
-    '<p class="muted" style="font-size:13px;color:#5d7a80">Upload file allocation log (<code class="inline">.xlsx</code> atau <code class="inline">.csv</code>) untuk distribusi massal ke banyak sales sekaligus — download template di atas (format .xlsx). Kolom <code class="inline">Canvasser ID</code> dipakai sebagai sales tujuan, <code class="inline">Product ID</code> sebagai produk, dan <code class="inline">Total</code> sebagai jumlah. Baris dengan Canvasser ID + Product ID yang sama otomatis dijumlahkan.</p>' +
+    '<p class="muted" style="font-size:13px;color:#5d7a80">Upload file allocation log (<code class="inline">.xlsx</code> atau <code class="inline">.csv</code>) untuk distribusi massal ke banyak sales sekaligus — download template di atas (format .xlsx). Kolom <code class="inline">Canvasser ID</code> dipakai sebagai sales tujuan, <code class="inline">Product ID</code> sebagai produk, <code class="inline">Total</code> sebagai jumlah, dan <code class="inline">Tanggal</code> sebagai tanggal transaksi (kosong = hari ini). Baris dengan Canvasser ID + Product ID + Tanggal yang sama otomatis dijumlahkan.</p>' +
     '<div class="row" style="align-items:flex-end;gap:12px">' +
       '<label class="field"><span>Gudang asal</span><select class="input" id="alloc-gudang" onchange="onAllocationGudangChange(this.value)"><option value="">Pilih gudang</option>' + warehouseOptions.map(w=>'<option value="'+w.id+'"'+(w.id===state.ui.allocationGudang?" selected":"")+'>'+esc(w.name)+'</option>').join("") + '</select></label>' +
       '<label class="field"><span>File</span><input type="file" accept=".csv,.xlsx,.xls" onchange="handleAllocationFile(this)"></label>' +
@@ -2606,8 +2607,8 @@ function renderDistribusi() {
     (allocRows.length ? (
       '<div style="margin-top:14px"><div class="section-head"><h3 style="font-size:13px">Preview (' + allocOk + '/' + allocRows.length + ' baris siap' + (allocErr ? ", " + allocErr + " bermasalah" : "") + ')</h3>' +
         '<button class="btn btn-primary" ' + (allocOk===0?"disabled":"") + ' onclick="applyAllocationImport()">&#10003; Proses ' + allocOk + ' baris</button></div>' +
-        '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Sales</th><th>Produk</th><th class="num">Qty</th><th>Status</th></tr></thead><tbody>' +
-        allocRows.map(r => '<tr><td>'+esc(r.salesName)+' <span class="muted">('+esc(r.salesId)+')</span></td><td>'+esc(r.productName)+'</td><td class="num">'+nfmt(r.qty)+'</td><td>' + (r.status==="ok" ? '<span class="badge badge-ok">&#10003; Siap</span>' : '<span class="badge badge-err">&#9888; '+esc(r.issue)+'</span>') + '</td></tr>').join("") +
+        '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Tanggal</th><th>Sales</th><th>Produk</th><th class="num">Qty</th><th>Status</th></tr></thead><tbody>' +
+        allocRows.map(r => '<tr><td class="muted">'+esc(r.tanggal)+'</td><td>'+esc(r.salesName)+' <span class="muted">('+esc(r.salesId)+')</span></td><td>'+esc(r.productName)+'</td><td class="num">'+nfmt(r.qty)+'</td><td>' + (r.status==="ok" ? '<span class="badge badge-ok">&#10003; Siap</span>' : '<span class="badge badge-err">&#9888; '+esc(r.issue)+'</span>') + '</td></tr>').join("") +
         '</tbody></table></div></div>'
     ) : "") +
   '</div>' +
@@ -2629,6 +2630,7 @@ function renderDistribusi() {
         '<label class="field"><span>Sales tujuan</span><select class="input" id="dist-sales"><option value="">Pilih sales</option>' + salesList.map(s=>'<option value="'+s.id+'">'+esc(s.name)+'</option>').join("") + '</select></label>' +
         '<label class="field"><span>Produk</span>' + productPickerHTML("dist-produk", renderDistAvail) + '</label>' +
         '<label class="field"><span>Jumlah</span><input class="input" type="number" min="1" id="dist-qty" placeholder="Jumlah unit"></label>' +
+        '<label class="field"><span>Tanggal</span><input class="input" type="date" id="dist-tanggal" value="'+esc(todayStr())+'"></label>' +
         '<div class="muted" id="dist-avail"></div>' +
         '<button class="btn btn-primary" onclick="onDistribusi()">&#128666; Kirim ke sales</button>' +
       '</div>' +
@@ -2646,7 +2648,8 @@ function onDistribusi() {
   const sales = document.getElementById("dist-sales").value;
   const produk = document.getElementById("dist-produk").value;
   const qty = Number(document.getElementById("dist-qty").value);
-  distribusiToSales(gudang, sales, produk, qty);
+  const tanggal = document.getElementById("dist-tanggal").value;
+  distribusiToSales(gudang, sales, produk, qty, tanggal);
 }
 
 function renderStokSales() {
@@ -2767,9 +2770,10 @@ function buildSalesUploadRows(dataRows) {
     const canvasserName = pickField(r, ["Canvasser Name","canvasser name","nama sales"]).toString().trim();
     const qtyRaw = pickField(r, ["Total Product","total product","qty","jumlah"]);
     const qty = parseInt((qtyRaw||"0").toString().replace(/[^0-9-]/g,""), 10) || 0;
+    const tanggal = parseDateField(r, ["Tanggal Transaksi","tanggal transaksi","tanggal","date"]) || todayStr();
     if (!productId && !canvasserId) return;
-    const key = canvasserId + "||" + productId;
-    if (!groups[key]) groups[key] = { productId, canvasserId, canvasserName, qty: 0 };
+    const key = canvasserId + "||" + productId + "||" + tanggal;
+    if (!groups[key]) groups[key] = { productId, canvasserId, canvasserName, tanggal, qty: 0 };
     groups[key].qty += qty;
   });
 
@@ -2785,7 +2789,7 @@ function buildSalesUploadRows(dataRows) {
       if (g.qty > avail) { status = "error"; issue = "Stok sales hanya " + avail; }
     }
     return {
-      key: i, qty: g.qty,
+      key: i, qty: g.qty, tanggal: g.tanggal,
       salesId: sales ? sales.id : g.canvasserId, salesName: sales ? sales.name : (g.canvasserName || g.canvasserId || "-"),
       productId: prod ? prod.id : g.productId, productName: prod ? prod.name : g.productId,
       status, issue,
@@ -2808,7 +2812,7 @@ function handleUploadFile(input) {
   } else {
     const reader = new FileReader();
     reader.onload = (e) => {
-      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
+      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
       state.ui.uploadRows = buildSalesUploadRows(rows);
@@ -2823,18 +2827,18 @@ function renderUploadPenjualan() {
   const skipped = rows._skippedNotCompleted || 0;
   let html = '<div class="stack">' +
     '<div class="section"><div class="section-head"><h3>Upload data penjualan sales</h3></div>' +
-      '<p class="muted" style="font-size:13px;color:#5d7a80">Unggah file export order log (<code class="inline">.xlsx</code> atau <code class="inline">.csv</code>) dengan kolom <code class="inline">Product ID</code> (kode barang), <code class="inline">Canvasser ID</code> (ID sales), <code class="inline">Total Product</code> (jumlah terjual), dan <code class="inline">Status Order</code>. Hanya baris dengan status <strong>Completed</strong> yang diproses dan mengurangi stok sales terkait; baris dengan status lain (mis. Canceled) otomatis diabaikan.</p>' +
+      '<p class="muted" style="font-size:13px;color:#5d7a80">Unggah file export order log (<code class="inline">.xlsx</code> atau <code class="inline">.csv</code>) dengan kolom <code class="inline">Product ID</code> (kode barang), <code class="inline">Canvasser ID</code> (ID sales), <code class="inline">Total Product</code> (jumlah terjual), <code class="inline">Status Order</code>, dan <code class="inline">Tanggal Transaksi</code> (kosong = hari ini). Hanya baris dengan status <strong>Completed</strong> yang diproses dan mengurangi stok sales terkait; baris dengan status lain (mis. Canceled) otomatis diabaikan.</p>' +
       '<div class="row"><input type="file" accept=".csv,.xlsx,.xls" onchange="handleUploadFile(this)">' + (state.ui.uploadFileName ? '<span class="muted">'+esc(state.ui.uploadFileName)+'</span>' : '') + '</div>' +
-      '<table class="tbl" style="margin-top:14px"><thead><tr><th>Contoh</th><th>Product ID</th><th>Canvasser ID</th><th>Total Product</th><th>Status Order</th></tr></thead><tbody>' +
-        '<tr><td class="muted">1</td><td class="muted">2606000509</td><td class="muted">SF-25060193</td><td class="muted">4</td><td class="muted">Completed</td></tr>' +
-        '<tr><td class="muted">2</td><td class="muted">2607002216</td><td class="muted">SF-25060193</td><td class="muted">2</td><td class="muted">Canceled (diabaikan)</td></tr>' +
+      '<table class="tbl" style="margin-top:14px"><thead><tr><th>Contoh</th><th>Product ID</th><th>Canvasser ID</th><th>Total Product</th><th>Status Order</th><th>Tanggal Transaksi</th></tr></thead><tbody>' +
+        '<tr><td class="muted">1</td><td class="muted">2606000509</td><td class="muted">SF-25060193</td><td class="muted">4</td><td class="muted">Completed</td><td class="muted">'+esc(todayStr())+'</td></tr>' +
+        '<tr><td class="muted">2</td><td class="muted">2607002216</td><td class="muted">SF-25060193</td><td class="muted">2</td><td class="muted">Canceled (diabaikan)</td><td class="muted">-</td></tr>' +
       '</tbody></table>' +
     '</div>';
   if (rows.length) {
     html += '<div class="section"><div class="section-head"><h3>Preview (' + okCount + '/' + rows.length + ' baris valid' + (skipped ? ", " + skipped + " baris non-Completed diabaikan" : "") + ')</h3>' +
       '<button class="btn btn-primary" ' + (okCount===0?"disabled":"") + ' onclick="applySalesUpload()">&#10003; Proses ' + okCount + ' baris</button></div>' +
-      '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Sales</th><th>Produk</th><th class="num">Qty</th><th>Status</th></tr></thead><tbody>' +
-      rows.map(r => '<tr><td>'+esc(r.salesName)+' <span class="muted">('+esc(r.salesId)+')</span></td><td>'+esc(r.productName)+'</td><td class="num">'+nfmt(r.qty)+'</td><td>' + (r.status==="ok" ? '<span class="badge badge-ok">&#10003; Siap diproses</span>' : '<span class="badge badge-err">&#9888; '+esc(r.issue)+'</span>') + '</td></tr>').join("") +
+      '<div class="tbl-scroll" style="max-height:380px"><table class="tbl"><thead><tr><th>Tanggal</th><th>Sales</th><th>Produk</th><th class="num">Qty</th><th>Status</th></tr></thead><tbody>' +
+      rows.map(r => '<tr><td class="muted">'+esc(r.tanggal)+'</td><td>'+esc(r.salesName)+' <span class="muted">('+esc(r.salesId)+')</span></td><td>'+esc(r.productName)+'</td><td class="num">'+nfmt(r.qty)+'</td><td>' + (r.status==="ok" ? '<span class="badge badge-ok">&#10003; Siap diproses</span>' : '<span class="badge badge-err">&#9888; '+esc(r.issue)+'</span>') + '</td></tr>').join("") +
       '</tbody></table></div></div>';
   } else if (skipped) {
     html += '<div class="section"><p class="muted">Semua ' + skipped + ' baris berstatus bukan Completed, tidak ada yang diproses.</p></div>';
@@ -2845,6 +2849,23 @@ function renderUploadPenjualan() {
 
 // ---------------- Katalog Barang: import + browse ----------------
 function normKey(s) { return (s||"").toString().trim().toLowerCase().replace(/[^a-z0-9]/g, ""); }
+function todayStr() { const d = new Date(); const off = d.getTimezoneOffset(); return new Date(d.getTime() - off*60000).toISOString().slice(0,10); }
+function excelSerialToDate(n) { return new Date(Math.round((n - 25569) * 86400 * 1000)); }
+function parseDateField(row, candidates) {
+  const v = pickField(row, candidates);
+  if (v === "" || v === undefined || v === null) return "";
+  if (v instanceof Date) return isNaN(v.getTime()) ? "" : v.toISOString().slice(0,10);
+  if (typeof v === "number") { const d = excelSerialToDate(v); return isNaN(d.getTime()) ? "" : d.toISOString().slice(0,10); }
+  const s = v.toString().trim();
+  if (!s) return "";
+  let d = new Date(s);
+  if (isNaN(d.getTime())) {
+    const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (m) d = new Date(+m[3], +m[2]-1, +m[1]);
+  }
+  return isNaN(d.getTime()) ? "" : d.toISOString().slice(0,10);
+}
+function txDateISO(dateStr) { return new Date((dateStr || todayStr()) + "T12:00:00").toISOString(); }
 function pickField(row, candidates) {
   const keys = Object.keys(row);
   for (const cand of candidates) {
