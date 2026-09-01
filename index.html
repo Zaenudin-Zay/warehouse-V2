@@ -3438,7 +3438,39 @@ window.addEventListener("error", function (e) {
 });
 
 (async function init() {
-  document.getElementById("root").innerHTML = '<div style="padding:60px;text-align:center;color:#93aeb2">Memuat data gudang...</div>';
+  (function () {
+    function gearPath(cx, cy, rOuter, rInner, rHole, teeth) {
+      var step = (Math.PI * 2) / teeth, half = step * 0.28, d = "";
+      for (var i = 0; i < teeth; i++) {
+        var a0 = i * step, a1 = a0 + half, a2 = a0 + step - half, a3 = a0 + step;
+        var p = function (a, r) { return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
+        var p0 = p(a0, rInner), p1 = p(a0, rOuter), p2 = p(a1, rOuter), p3 = p(a2, rOuter), p4 = p(a2, rInner), p5 = p(a3, rInner);
+        d += (i === 0 ? "M" + p0[0] + "," + p0[1] : "L" + p0[0] + "," + p0[1]) +
+          " L" + p1[0] + "," + p1[1] + " L" + p2[0] + "," + p2[1] + " L" + p3[0] + "," + p3[1] +
+          " L" + p4[0] + "," + p4[1] + " A" + rInner + "," + rInner + " 0 0 1 " + p5[0] + "," + p5[1];
+      }
+      d += "Z";
+      var hole = "M" + (cx - rHole) + "," + cy + " a" + rHole + "," + rHole + " 0 1,0 " + (rHole * 2) + ",0 a" + rHole + "," + rHole + " 0 1,0 " + (-rHole * 2) + ",0 Z";
+      return d + " " + hole;
+    }
+    var svg = '<svg viewBox="0 0 300 300" style="width:180px;height:180px">' +
+      '<g class="gear-big"><path fill-rule="evenodd" fill="#7c6fd6" d="' + gearPath(110, 110, 68, 56, 26, 10) + '"/></g>' +
+      '<g class="gear-mid"><path fill-rule="evenodd" fill="#7c6fd6" d="' + gearPath(228, 178, 44, 35, 16, 8) + '"/></g>' +
+      '<g class="gear-small"><path fill-rule="evenodd" fill="#7c6fd6" d="' + gearPath(150, 235, 40, 32, 14, 8) + '"/></g>' +
+      '</svg>';
+    document.getElementById("root").innerHTML =
+      '<div style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#93aeb2">' +
+      svg +
+      '<div style="margin-top:18px;font-size:15px">Loading Please Wait</div>' +
+      '<style>' +
+      '.gear-big{transform-origin:110px 110px;animation:spin-cw 4s linear infinite}' +
+      '.gear-mid{transform-origin:228px 178px;animation:spin-ccw 3.2s linear infinite}' +
+      '.gear-small{transform-origin:150px 235px;animation:spin-ccw 3.2s linear infinite}' +
+      '@keyframes spin-cw{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}' +
+      '@keyframes spin-ccw{from{transform:rotate(0deg)}to{transform:rotate(-360deg)}}' +
+      '</style>' +
+      '</div>';
+  })();
   try {
     await loadData();
     await restoreSession();
