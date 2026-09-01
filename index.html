@@ -1127,11 +1127,17 @@ async function applyAllocationImport() {
     if (!stockData || stockData.length !== stockPayload.length)
       throw new Error("Stok gudang hanya " + (stockData?stockData.length:0) + "/" + stockPayload.length + " baris tersimpan (kemungkinan diblokir izin akses Supabase)");
 
-    // Baris sudah unik per (sales, produk) dari proses grouping sebelumnya,
-    // jadi stok sales bisa langsung dikirim sebagai satu batch juga.
-    const salesPayload = rows.map(r => ({
-      sales_id: r.salesId, product_id: r.productId,
-      qty: (state.data.salesStock[r.salesId]?.[r.productId] || 0) + r.qty
+    // Rows kini bisa unik per (sales, produk, tanggal), jadi gabungkan dulu
+    // per (sales, produk) sebelum kirim upsert stok sales — supaya tidak ada
+    // pasangan sales_id+product_id dobel dalam satu batch upsert.
+    const salesDelta = {};
+    rows.forEach(r => {
+      const key = r.salesId + "||" + r.productId;
+      if (salesDelta[key] === undefined) salesDelta[key] = { salesId: r.salesId, productId: r.productId, qty: state.data.salesStock[r.salesId]?.[r.productId] || 0 };
+      salesDelta[key].qty += r.qty;
+    });
+    const salesPayload = Object.values(salesDelta).map(g => ({
+      sales_id: g.salesId, product_id: g.productId, qty: g.qty
     }));
     const { data: salesData, error: salesError } = await sb.from('sales_stock')
       .upsert(salesPayload, { onConflict: 'sales_id,product_id' }).select();
