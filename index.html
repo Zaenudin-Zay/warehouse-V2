@@ -138,6 +138,7 @@
   .badge-distribusi { background: var(--mint-light); color: var(--mint-dark); }
   .badge-penjualan { background: var(--red-light); color: var(--red-dark); }
   .badge-retur { background: #fdf3dc; color: #92400e; }
+  .badge-retur-sales { background: #e0f2fe; color: #0c5a8a; }
   .badge-ganti { background: #d7f2ee; color: var(--navy-dark); }
   .badge-produksi { background: #e6ddf9; color: #5b3fa0; }
   .badge-stok { background: #f1f5f5; color: var(--ink-muted); }
@@ -1022,6 +1023,57 @@ async function distribusiToSales(warehouseId, salesId, productId, qty, tanggal) 
   } catch (e) {
     console.error('distribusiToSales error:', e);
     notify("Gagal distribusi: " + (e.message || e), "error");
+  }
+}
+
+async function returFromSales(salesId, warehouseId, productId, qty, tanggal) {
+  if (!salesId || !warehouseId || !productId || !qty || qty <= 0)
+    return notify("Lengkapi sales asal, gudang tujuan, produk dan jumlah", "error");
+
+  if (!state.data.products.find(p => p.id === productId))
+    return notify("INVALID: Product ID \"" + productId + "\" tidak ditemukan di katalog", "error");
+
+  const availSales = state.data.salesStock[salesId]?.[productId] || 0;
+  if (qty > availSales)
+    return notify("Stok sales tidak cukup (dipegang " + availSales + ")", "error");
+
+  try {
+    // 1. Insert transaction
+    const { error: txError } = await sb.from('transactions').insert({
+      id: uid('trx'),
+      type: 'retur_sales',
+      date: txDateISO(tanggal),
+      from_location: salesId,
+      to_location: warehouseId,
+      product_id: productId,
+      qty: qty,
+      note: 'Retur barang dari sales'
+    });
+    if (txError) throw txError;
+
+    // 2. Decrease sales stock
+    const { error: fromError } = await sb.from('sales_stock').upsert({
+      sales_id: salesId,
+      product_id: productId,
+      qty: availSales - qty
+    }, { onConflict: 'sales_id,product_id' });
+    if (fromError) throw fromError;
+
+    // 3. Increase warehouse stock
+    const availWh = state.data.stock[warehouseId]?.[productId] || 0;
+    const { error: toError } = await sb.from('warehouse_stock').upsert({
+      warehouse_id: warehouseId,
+      product_id: productId,
+      quantity: availWh + qty
+    }, { onConflict: 'warehouse_id,product_id' });
+    if (toError) throw toError;
+
+    await loadData();
+    render();
+    notify("Retur barang dari sales berhasil dicatat");
+  } catch (e) {
+    console.error('returFromSales error:', e);
+    notify("Gagal mencatat retur: " + (e.message || e), "error");
   }
 }
 
@@ -2152,6 +2204,7 @@ const TYPE_LABEL = {
   masuk: ["Barang masuk","badge-masuk"], transfer: ["Transfer gudang","badge-transfer"],
   distribusi: ["Distribusi ke sales","badge-distribusi"], penjualan: ["Penjualan","badge-penjualan"],
   retur_keluar: ["Laporan bermasalah","badge-retur"], penggantian_masuk: ["Penggantian principal","badge-ganti"],
+  retur_sales: ["Retur dari sales","badge-retur-sales"],
   stok_awal: ["Update stok awal","badge-stok"],
   produksi_keluar: ["Produksi (bahan)","badge-produksi"], produksi_masuk: ["Produksi (hasil)","badge-produksi"],
 };
@@ -2696,6 +2749,18 @@ function renderDistribusi() {
         '<button class="btn btn-primary" onclick="onDistribusi()">&#128666; Kirim ke sales</button>' +
       '</div>' +
     '</div>' +
+  '</div>' +
+  '<div class="section" style="margin-top:20px"><div class="section-head"><h3>Retur Barang</h3></div>' +
+    '<p class="muted" style="font-size:13px;color:#5d7a80">Sales mengembalikan barang ke gudang tujuan. Stok akan berkurang di sales dan bertambah di gudang tujuan.</p>' +
+    '<div class="row" style="align-items:flex-end;flex-wrap:wrap">' +
+      '<label class="field"><span>Nama sales</span><select class="input" id="retur-sales"><option value="">Pilih sales</option>' + salesList.map(s=>'<option value="'+s.id+'">'+esc(s.name)+'</option>').join("") + '</select></label>' +
+      '<label class="field"><span>Gudang tujuan</span><select class="input" id="retur-gudang"><option value="">Pilih gudang</option>' + warehouseOptions.map(w=>'<option value="'+w.id+'">'+esc(w.name)+'</option>').join("") + '</select></label>' +
+      '<label class="field"><span>Produk ID</span><input class="input" id="retur-produk" placeholder="mis. SP-001" oninput="checkReturProductId()" autocomplete="off"></label>' +
+      '<label class="field"><span>Qty</span><input class="input" type="number" min="1" id="retur-qty" placeholder="Jumlah unit"></label>' +
+      '<label class="field"><span>Tanggal</span><input class="input" type="date" id="retur-tanggal" value="'+esc(todayStr())+'"></label>' +
+      '<button class="btn btn-primary" onclick="onReturSales()">&#8617; Submit retur</button>' +
+    '</div>' +
+    '<div class="muted" id="retur-produk-status"></div>' +
   '</div>';
 }
 function renderDistAvail() {
@@ -2711,6 +2776,29 @@ function onDistribusi() {
   const qty = Number(document.getElementById("dist-qty").value);
   const tanggal = document.getElementById("dist-tanggal").value;
   distribusiToSales(gudang, sales, produk, qty, tanggal);
+}
+function checkReturProductId() {
+  const el = document.getElementById("retur-produk");
+  const statusEl = document.getElementById("retur-produk-status");
+  if (!el || !statusEl) return;
+  const id = el.value.trim();
+  if (!id) { statusEl.innerHTML = ""; return; }
+  const prod = state.data.products.find(p => p.id === id);
+  statusEl.innerHTML = prod
+    ? '<span class="badge badge-ok">&#10003; ' + esc(prod.name) + '</span>'
+    : '<span class="badge badge-err">&#9888; INVALID - Product ID tidak ada di katalog</span>';
+}
+function onReturSales() {
+  const sales = document.getElementById("retur-sales").value;
+  const gudang = document.getElementById("retur-gudang").value;
+  const produk = document.getElementById("retur-produk").value.trim();
+  const qty = Number(document.getElementById("retur-qty").value);
+  const tanggal = document.getElementById("retur-tanggal").value;
+  if (produk && !state.data.products.find(p => p.id === produk)) {
+    checkReturProductId();
+    return notify("INVALID: Product ID \"" + produk + "\" tidak ditemukan di katalog", "error");
+  }
+  returFromSales(sales, gudang, produk, qty, tanggal);
 }
 
 function renderStokSales() {
