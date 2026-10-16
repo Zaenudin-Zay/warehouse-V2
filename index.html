@@ -1948,6 +1948,14 @@ function isPusatAdmin() { return state.session && state.session.role === "admin_
 function isCabangAdmin() { return state.session && state.session.role === "admin_cabang"; }
 function isPusatOrHQ() { return isPusatAdmin() || isHQ(); }
 function myCabangId() { return state.session ? state.session.cabangId : ""; }
+// Gudang cabang yang boleh dilihat user login: HQ = semua, admin pusat/cabang = hanya cluster sendiri
+// (cluster tanpa gudang cabang -> list kosong / 0).
+function scopedCabangWarehouses() {
+  const all = state.data.warehouses.filter(w => w.type === "cabang");
+  if (isHQ()) return all;
+  const cl = myCluster();
+  return cl ? all.filter(w => warehouseCluster(w) === cl) : [];
+}
 function myGudangPusatId() { return state.session ? state.session.gudangPusat : ""; }
 function myCluster() {
   if (isPusatAdmin()) {
@@ -2612,7 +2620,7 @@ function onStockIn() {
 }
 
 function renderGudangCabang() {
-  let cabangList = state.data.warehouses.filter(w=>w.type==="cabang");
+  let cabangList = scopedCabangWarehouses();
   if (isCabangAdmin()) cabangList = cabangList.filter(w=>w.id===myCabangId());
   if ((!state.ui.cabangSelected || !cabangList.find(c=>c.id===state.ui.cabangSelected)) && cabangList[0]) state.ui.cabangSelected = cabangList[0].id;
   const selected = state.ui.cabangSelected;
@@ -3096,7 +3104,7 @@ function renderKatalogBarang() {
     '<div class="grid grid-3">' +
       statCard((isPusatAdmin()||isCabangAdmin()) ? "Total produk cluster Anda" : "Total produk di katalog", nfmt(scopedProducts.length), "indigo") +
       statCard("Jumlah brand", brands.length, "slate") +
-      statCard("Jumlah gudang cabang", state.data.warehouses.filter(w=>w.type==="cabang").length, "blue") +
+      statCard("Jumlah gudang cabang", scopedCabangWarehouses().length, "blue") +
     '</div>' +
     '<div class="section"><div class="section-head"><h3>Import / update katalog barang</h3>' +
       '<button class="btn btn-ghost" onclick="downloadCatalogTemplate()">&#8681; Download template</button>' +
@@ -3223,9 +3231,7 @@ function renderLogin() {
 }
 
 function renderKelolaPengguna() {
-  const cabangList = isPusatAdmin()
-    ? state.data.warehouses.filter(w=>w.type==="cabang" && w.cluster===myCluster())
-    : state.data.warehouses.filter(w=>w.type==="cabang");
+  const cabangList = scopedCabangWarehouses();
   return '<div class="stack">' +
     '<div class="section"><div class="section-head"><h3>Tambah akun pengguna</h3></div>' +
       '<div class="row" style="align-items:flex-end">' +
