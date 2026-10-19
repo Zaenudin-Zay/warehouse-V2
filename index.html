@@ -304,13 +304,19 @@ async function loadWarehouses() {
   }));
 }
 
+const POSISI_LIST = ["Canvasser", "Promotor", "Supervisor"];
+function normPosisi(v) {
+  const k = (v || "").toString().trim().toLowerCase();
+  return POSISI_LIST.find(x => x.toLowerCase() === k) || "";
+}
 async function loadSalesTeam() {
   const data = await fetchAllRows('sales_team');
   return data.map(s => ({
     id: s.id,
     name: s.name,
     gudang: s.gudang,
-    supervisor: s.supervisor
+    supervisor: s.supervisor,
+    posisi: s.posisi || ""
   }));
 }
 
@@ -724,6 +730,7 @@ const state = {
     allocationRows: [], allocationFileName: "", allocationGudang: "",
     period: "all", periodFrom: "", periodTo: "",
     stockStatusFilter: "all", salesStockStatusFilter: "all", stockBrandFilter: "",
+    distPosisiFilter: "", stokPosisiFilter: "", catalogEdit: null,
     profileMenuOpen: false, pwError: "", pwSuccess: "", sidebarCollapsed: false,
     loginError: "", userForm: false },
 };
@@ -1026,7 +1033,7 @@ async function distribusiToSales(warehouseId, salesId, productId, qty, tanggal) 
 
     await loadData();
     render();
-    notify("Barang berhasil didistribusikan ke sales");
+    notify("Barang berhasil didistribusikan ke team");
   } catch (e) {
     console.error('distribusiToSales error:', e);
     notify("Gagal distribusi: " + (e.message || e), "error");
@@ -1223,7 +1230,7 @@ async function applyAllocationImport() {
   }
 }
 
-async function addSalesPerson(id, name, gudangId, supervisor) {
+async function addSalesPerson(id, name, gudangId, supervisor, posisi) {
   // 1. INPUT VALIDATION
   id = (id || "").trim();
   name = (name || "").trim();
@@ -1239,7 +1246,8 @@ async function addSalesPerson(id, name, gudangId, supervisor) {
       id: id,
       name: name,
       gudang: gudangId || null,
-      supervisor: (supervisor || "").trim() || null
+      supervisor: (supervisor || "").trim() || null,
+      posisi: normPosisi(posisi) || null
     });
     if (salesError) throw salesError;
 
@@ -1640,6 +1648,7 @@ async function submitManualCatalog() {
   try {
     const { data: existing } = await sb.from('products').select('id').eq('id', id).maybeSingle();
     const isNew = !existing;
+    if (!isNew && !(isHQ() || isPusatAdmin())) { notify("Hanya HQ dan admin gudang pusat yang bisa mengubah produk", "error"); if (btn) { btn.disabled = false; btn.textContent = btnOriginalText; } return; }
 
     const { error: prodErr } = await sb.from('products').upsert([{
       id, name, category, brand, material_code: "", family_paket: familyPaket, cluster, price, harga_program: hargaProgram
@@ -1661,6 +1670,7 @@ async function submitManualCatalog() {
       }
     }
 
+    state.ui.catalogEdit = null;
     await loadData();
     render();
     notify(isNew ? "Produk baru \"" + name + "\" ditambahkan ke katalog (cluster " + cluster + ")" : "Produk \"" + name + "\" diperbarui");
@@ -1860,15 +1870,15 @@ async function applyStockImport() {
 
 // ---------------- Import massal daftar sales ----------------
 function downloadSalesTemplate() {
-  const headers = ["ID Sales", "Nama Sales", "Gudang", "Supervisor"];
+  const headers = ["ID Sales", "Nama Sales", "Gudang", "Supervisor", "Posisi"];
   const pusatName = (state.data.warehouses.find(w=>w.type==="pusat")||{}).name || "Gudang Pusat";
-  const rows = [["SF-25060193", "Lutfy Andrean Saputra", pusatName, "Nama Supervisor"]];
+  const rows = [["SF-25060193", "Lutfy Andrean Saputra", pusatName, "Nama Supervisor", "Canvasser"]];
   downloadCSV("template_daftar_sales.csv", headers, rows);
   notify("Template daftar sales diunduh. Kolom Gudang harus sama persis dengan nama gudang yang ada di sistem.");
 }
 function exportSalesData() {
-  const headers = ["ID Sales", "Nama Sales", "Gudang", "Supervisor"];
-  const rows = state.data.salesTeam.map(s => [s.id, s.name, (state.data.warehouses.find(w=>w.id===s.gudang)||{}).name || "", s.supervisor || ""]);
+  const headers = ["ID Sales", "Nama Sales", "Gudang", "Supervisor", "Posisi"];
+  const rows = state.data.salesTeam.map(s => [s.id, s.name, (state.data.warehouses.find(w=>w.id===s.gudang)||{}).name || "", s.supervisor || "", s.posisi || ""]);
   downloadCSV("export_daftar_sales.csv", headers, rows);
   notify("Daftar sales berhasil diunduh");
 }
@@ -1879,6 +1889,7 @@ function buildSalesImportRows(dataRows) {
     const name = pickField(r, ["Nama Sales","nama sales","name","canvasser name"]).toString().trim();
     const gudangRaw = pickField(r, ["Gudang","warehouse","lokasi"]).toString().trim();
     const supervisor = pickField(r, ["Supervisor","atasan"]).toString().trim();
+    const posisi = normPosisi(pickField(r, ["Posisi","position","jabatan"]));
     const wh = gudangRaw ? matchWarehouseByLabel(gudangRaw) : null;
 
     let status = "new", issue = "";
@@ -1889,7 +1900,7 @@ function buildSalesImportRows(dataRows) {
     if (status !== "error" && gudangRaw && !wh) { issue = 'Gudang "' + gudangRaw + '" tidak dikenali (dikosongkan)'; }
     if (id) seenIds[id.toLowerCase()] = true;
 
-    return { key: i, id, name, gudang: wh ? wh.id : "", gudangLabel: wh ? wh.name : (gudangRaw || "-"), supervisor, status, issue };
+    return { key: i, id, name, gudang: wh ? wh.id : "", gudangLabel: wh ? wh.name : (gudangRaw || "-"), supervisor, posisi, status, issue };
   });
 }
 function handleSalesImportFile(input) {
@@ -1928,7 +1939,7 @@ async function applySalesImport() {
     // concurrently instead of waiting for each one before starting the next)
     if (updateRows.length) {
       const results = await Promise.all(updateRows.map(r =>
-        sb.from('sales_team').update({ name: r.name, gudang: r.gudang, supervisor: r.supervisor }).eq('id', r.id)
+        sb.from('sales_team').update(Object.assign({ name: r.name, gudang: r.gudang, supervisor: r.supervisor }, r.posisi ? { posisi: r.posisi } : {})).eq('id', r.id)
       ));
       const firstError = results.find(res => res.error);
       if (firstError) throw firstError.error;
@@ -1937,7 +1948,7 @@ async function applySalesImport() {
     // Bulk-insert all new sales in a single request
     if (newRows.length) {
       const { error: insError } = await sb.from('sales_team').insert(
-        newRows.map(r => ({ id: r.id, name: r.name, gudang: r.gudang, supervisor: r.supervisor }))
+        newRows.map(r => ({ id: r.id, name: r.name, gudang: r.gudang, supervisor: r.supervisor, posisi: r.posisi || null }))
       );
       if (insError) throw insError;
 
@@ -2750,10 +2761,17 @@ function onProduksi(scope) {
   produksiConversion(warehouseId, bahanId, hasilId, qty);
 }
 
+function posisiFilterSelect(current, handler) {
+  return '<label class="field" style="min-width:160px"><span>Posisi</span><select class="input" onchange="' + handler + '(this.value)">' +
+    '<option value="">Semua posisi</option>' + POSISI_LIST.map(x=>'<option value="'+x+'"'+(x===current?" selected":"")+'>'+x+'</option>').join("") + '</select></label>';
+}
+function onDistPosisiFilter(v) { state.ui.distPosisiFilter = v; render(); }
+function onStokPosisiFilter(v) { state.ui.stokPosisiFilter = v; render(); }
 function renderDistribusi() {
-  const salesList = isCabangAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myCabangId())
+  const salesListAll = isCabangAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myCabangId())
     : isPusatAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myGudangPusatId())
     : state.data.salesTeam;
+  const salesList = state.ui.distPosisiFilter ? salesListAll.filter(s=>s.posisi===state.ui.distPosisiFilter) : salesListAll;
   const warehouseOptions = isCabangAdmin() ? state.data.warehouses.filter(w=>w.id===myCabangId())
     : isPusatAdmin() ? state.data.warehouses.filter(w=>w.id===myGudangPusatId())
     : state.data.warehouses;
@@ -2778,26 +2796,26 @@ function renderDistribusi() {
     ) : "") +
   '</div>' +
   '<div class="grid grid-2-1" style="margin-top:20px">' +
-    '<div class="section"><div class="section-head"><h3>Stok saat ini di tim sales</h3></div>' +
+    '<div class="section"><div class="section-head"><h3>Stok saat ini di tim sales</h3>' + posisiFilterSelect(state.ui.distPosisiFilter, "onDistPosisiFilter") + '</div>' +
       (salesList.length ? (
-        '<table class="tbl"><thead><tr><th>ID</th><th>Sales</th><th>Gudang</th><th class="num">Total unit dipegang</th></tr></thead><tbody>' +
+        '<table class="tbl"><thead><tr><th>ID</th><th>Sales</th><th>Posisi</th><th>Gudang</th><th class="num">Total unit dipegang</th></tr></thead><tbody>' +
         salesList.map(s => {
           const total = Object.values(state.data.salesStock[s.id]||{}).reduce((a,b)=>a+b,0);
           const gudangName = (state.data.warehouses.find(w=>w.id===s.gudang)||{}).name || "-";
-          return '<tr><td class="muted">'+esc(s.id)+'</td><td>'+esc(s.name)+'</td><td class="muted">'+esc(gudangName)+'</td><td class="num">'+nfmt(total)+'</td></tr>';
+          return '<tr><td class="muted">'+esc(s.id)+'</td><td>'+esc(s.name)+'</td><td class="muted">'+esc(s.posisi||"-")+'</td><td class="muted">'+esc(gudangName)+'</td><td class="num">'+nfmt(total)+'</td></tr>';
         }).join("") +
         '</tbody></table>'
-      ) : '<p class="muted">Belum ada anggota tim sales. Tambahkan dulu di menu Stok di Sales.</p>') +
+      ) : '<p class="muted">' + (salesListAll.length ? 'Tidak ada anggota team dengan posisi ini.' : 'Belum ada anggota tim sales. Tambahkan dulu di menu Stok di Team.') + '</p>') +
     '</div>' +
-    '<div class="section"><div class="section-head"><h3>Distribusikan barang ke sales</h3></div>' +
+    '<div class="section"><div class="section-head"><h3>Distribusikan Barang ke Team</h3></div>' +
       '<div class="stack" style="gap:12px">' +
         '<label class="field"><span>Gudang asal</span><select class="input" id="dist-gudang">' + warehouseOptions.map(w=>'<option value="'+w.id+'">'+esc(w.name)+'</option>').join("") + '</select></label>' +
-        '<label class="field"><span>Sales tujuan</span><select class="input" id="dist-sales"><option value="">Pilih sales</option>' + salesList.map(s=>'<option value="'+s.id+'">'+esc(s.name)+'</option>').join("") + '</select></label>' +
+        '<label class="field"><span>Team tujuan</span><select class="input" id="dist-sales"><option value="">Pilih team</option>' + salesList.map(s=>'<option value="'+s.id+'">'+esc(s.name)+(s.posisi?' ('+esc(s.posisi)+')':'')+'</option>').join("") + '</select></label>' +
         '<label class="field"><span>Produk</span>' + productPickerHTML("dist-produk", renderDistAvail) + '</label>' +
         '<label class="field"><span>Jumlah</span><input class="input" type="number" min="1" id="dist-qty" placeholder="Jumlah unit"></label>' +
         '<label class="field"><span>Tanggal</span><input class="input" type="date" id="dist-tanggal" value="'+esc(todayStr())+'"></label>' +
         '<div class="muted" id="dist-avail"></div>' +
-        '<button class="btn btn-primary" onclick="onDistribusi()">&#128666; Kirim ke sales</button>' +
+        '<button class="btn btn-primary" onclick="onDistribusi()">&#128666; Kirim ke team</button>' +
       '</div>' +
     '</div>' +
   '</div>' +
@@ -2853,9 +2871,10 @@ function onReturSales() {
 }
 
 function renderStokSales() {
-  const myTeam = isCabangAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myCabangId())
+  const baseTeam = isCabangAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myCabangId())
     : isPusatAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myGudangPusatId())
     : state.data.salesTeam;
+  const myTeam = state.ui.stokPosisiFilter ? baseTeam.filter(s=>s.posisi===state.ui.stokPosisiFilter) : baseTeam;
   if (state.ui.salesSelectedStok && !myTeam.find(s=>s.id===state.ui.salesSelectedStok)) state.ui.salesSelectedStok = "";
   if (!state.ui.salesSelectedStok && myTeam[0]) state.ui.salesSelectedStok = myTeam[0].id;
   const salesId = state.ui.salesSelectedStok;
@@ -2872,6 +2891,7 @@ function renderStokSales() {
         '<label class="field"><span>Nama Sales</span><input class="input" id="sales-nama" placeholder="Nama sales"></label>' +
         '<label class="field"><span>Gudang</span><select class="input" id="sales-gudang"><option value="">Pilih gudang</option>' + gudangOptions.map(w=>'<option value="'+w.id+'">'+esc(w.name)+'</option>').join("") + '</select></label>' +
         '<label class="field"><span>Supervisor</span><input class="input" id="sales-supervisor" placeholder="Nama supervisor"></label>' +
+        '<label class="field"><span>Posisi</span><select class="input" id="sales-posisi"><option value="">Pilih posisi</option>' + POSISI_LIST.map(x=>'<option value="'+x+'">'+x+'</option>').join("") + '</select></label>' +
         '<button class="btn btn-primary" onclick="onAddSales()">Simpan</button>' +
       '</div>' +
     '</div></div>';
@@ -2898,7 +2918,7 @@ function renderStokSales() {
     ) : "") +
   '</div></div>';
 
-  if (!myTeam.length) {
+  if (!baseTeam.length) {
     return '<div class="stack">' +
       '<div class="row"><button class="btn btn-ghost" onclick="toggleAddSales()">+ Tambah sales</button><button class="btn btn-ghost" onclick="toggleImportSales()">&#8613; Import massal sales</button></div>' +
       addForm +
@@ -2907,8 +2927,18 @@ function renderStokSales() {
     '</div>';
   }
 
+  if (!myTeam.length) {
+    return '<div class="stack">' +
+      '<div class="row" style="align-items:flex-end">' + posisiFilterSelect(state.ui.stokPosisiFilter, "onStokPosisiFilter") +
+      '<button class="btn btn-ghost" onclick="toggleAddSales()">+ Tambah sales</button><button class="btn btn-ghost" onclick="toggleImportSales()">&#8613; Import massal sales</button></div>' +
+      addForm + importBox +
+      '<div class="section"><p class="muted">Tidak ada anggota team dengan posisi ' + esc(state.ui.stokPosisiFilter) + '.</p></div>' +
+    '</div>';
+  }
+
   return '<div class="stack">' +
-    '<div class="row">' +
+    '<div class="row" style="align-items:flex-end">' +
+      posisiFilterSelect(state.ui.stokPosisiFilter, "onStokPosisiFilter") +
       '<select class="input" onchange="onSalesStokSelect(this.value)">' + myTeam.map(s=>'<option value="'+s.id+'"'+(s.id===salesId?" selected":"")+'>'+esc(s.name)+'</option>').join("") + '</select>' +
       '<button class="btn btn-ghost" onclick="toggleAddSales()">+ Tambah sales</button>' +
       '<button class="btn btn-ghost" onclick="toggleImportSales()">&#8613; Import massal sales</button>' +
@@ -2919,7 +2949,7 @@ function renderStokSales() {
     '<div class="grid grid-3">' +
       statCard("Total unit dipegang", nfmt(total), "slate") +
       statCard("ID Sales", esc(salesId), "indigo") +
-      statCard("Gudang & Supervisor", esc((state.data.warehouses.find(w=>w.id===(salesInfo?salesInfo.gudang:""))||{}).name || "-"), "blue", salesInfo && salesInfo.supervisor ? "Supervisor: " + salesInfo.supervisor : "Supervisor: -") +
+      statCard("Gudang & Supervisor", esc((state.data.warehouses.find(w=>w.id===(salesInfo?salesInfo.gudang:""))||{}).name || "-"), "blue", "Posisi: " + ((salesInfo && salesInfo.posisi) || "-") + " | " + (salesInfo && salesInfo.supervisor ? "Supervisor: " + salesInfo.supervisor : "Supervisor: -")) +
     '</div>' +
     '<div class="section"><div class="section-head"><h3>Rincian stok per produk</h3></div>' +
       stockFilterButtons(state.ui.salesStockStatusFilter, "onSalesStockStatusFilter") +
@@ -2947,7 +2977,8 @@ function onAddSales() {
   const name = document.getElementById("sales-nama").value;
   const gudang = document.getElementById("sales-gudang").value;
   const supervisor = document.getElementById("sales-supervisor").value;
-  addSalesPerson(id, name, gudang, supervisor);
+  const posisi = document.getElementById("sales-posisi").value;
+  addSalesPerson(id, name, gudang, supervisor, posisi);
 }
 function onDeleteSales() {
   const salesId = state.ui.salesSelectedStok;
@@ -3129,7 +3160,18 @@ function onCatalogSearch(v) { state.ui.catalogSearch = v; render(); }
 function onCatalogBrandFilter(v) { state.ui.catalogBrandFilter = v; render(); }
 function onCatalogCategoryFilter(v) { state.ui.catalogCategoryFilter = v; render(); }
 
+function editCatalogProduct(id) {
+  if (!(isHQ() || isPusatAdmin())) return notify("Hanya HQ dan admin gudang pusat yang bisa mengedit katalog", "error");
+  const p = state.data.products.find(x => x.id === id);
+  if (!p) return;
+  state.ui.catalogEdit = p;
+  render();
+  const el = document.getElementById("mc-form-section");
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function cancelCatalogEdit() { state.ui.catalogEdit = null; render(); }
 function renderKatalogBarang() {
+  const canEditCatalog = isHQ() || isPusatAdmin();
   const rows = state.ui.catalogRows;
   const newCount = rows.filter(r=>r.status==="new").length;
   const updCount = rows.filter(r=>r.status==="update").length;
@@ -3160,20 +3202,22 @@ function renderKatalogBarang() {
       '<div class="row"><input type="file" accept=".csv,.xlsx,.xls" onchange="handleCatalogFile(this)">' + (state.ui.catalogFileName ? '<span class="muted">'+esc(state.ui.catalogFileName)+'</span>' : '') + '</div>' +
     '</div>';
 
-  html += '<div class="section"><div class="section-head"><h3>Input katalog manual (satuan)</h3></div>' +
+  const ed = state.ui.catalogEdit;
+  html += '<div class="section" id="mc-form-section"><div class="section-head"><h3>' + (ed ? "Edit produk: " + esc(ed.id) : "Input katalog manual (satuan)") + '</h3></div>' +
     '<p class="muted" style="font-size:13px;color:#5d7a80">Tambah / update 1 produk langsung tanpa upload file. Cluster mengikuti login Anda saat ini.</p>' +
     '<div class="row" style="align-items:flex-end;flex-wrap:wrap">' +
-      '<label class="field"><span>Product ID</span><input class="input" id="mc-id" placeholder="mis. SP-001"></label>' +
-      '<label class="field"><span>Nama produk</span><input class="input" id="mc-name" placeholder="Nama produk"></label>' +
-      '<label class="field"><span>Brand</span><input class="input" id="mc-brand" list="mc-brand-list" placeholder="Brand"><datalist id="mc-brand-list">' + brands.map(b=>'<option value="'+esc(b)+'">').join("") + '</datalist></label>' +
-      '<label class="field"><span>Kategori</span><input class="input" id="mc-category" list="mc-category-list" placeholder="mis. SP / PV"><datalist id="mc-category-list">' + categories.map(c=>'<option value="'+esc(c)+'">').join("") + '</datalist></label>' +
-      '<label class="field"><span>Family paket</span><input class="input" id="mc-family" placeholder="Family paket"></label>' +
+      '<label class="field"><span>Product ID</span><input class="input" id="mc-id" placeholder="mis. SP-001" value="' + esc(ed?ed.id:"") + '"' + (ed?" readonly":"") + '></label>' +
+      '<label class="field"><span>Nama produk</span><input class="input" id="mc-name" placeholder="Nama produk" value="' + esc(ed?ed.name:"") + '"></label>' +
+      '<label class="field"><span>Brand</span><input class="input" id="mc-brand" list="mc-brand-list" placeholder="Brand" value="' + esc(ed?ed.brand:"") + '"><datalist id="mc-brand-list">' + brands.map(b=>'<option value="'+esc(b)+'">').join("") + '</datalist></label>' +
+      '<label class="field"><span>Kategori</span><input class="input" id="mc-category" list="mc-category-list" placeholder="mis. SP / PV" value="' + esc(ed?ed.category:"") + '"><datalist id="mc-category-list">' + categories.map(c=>'<option value="'+esc(c)+'">').join("") + '</datalist></label>' +
+      '<label class="field"><span>Family paket</span><input class="input" id="mc-family" placeholder="Family paket" value="' + esc(ed?(ed.familyPaket||""):"") + '"></label>' +
       ((isPusatAdmin()||isCabangAdmin())
         ? '<label class="field"><span>Cluster</span><input class="input" id="mc-cluster" value="' + esc(myCluster()||"") + '" disabled></label>'
-        : '<label class="field"><span>Cluster</span><select class="input" id="mc-cluster"><option value="">Pilih cluster</option>' + GUDANG_PUSAT_LIST.map(g=>'<option value="'+esc(g)+'">'+esc(g)+'</option>').join("") + '</select></label>') +
-      '<label class="field"><span>Harga modal</span><input class="input" id="mc-price" inputmode="numeric" placeholder="Harga modal (Rp)"></label>' +
-      '<label class="field"><span>Harga program (opsional)</span><input class="input" id="mc-program" inputmode="numeric" placeholder="mis. 167"></label>' +
-      '<button class="btn btn-primary" id="btn-manual-katalog" onclick="submitManualCatalog()">&#10003; Simpan produk</button>' +
+        : '<label class="field"><span>Cluster</span><select class="input" id="mc-cluster"><option value="">Pilih cluster</option>' + GUDANG_PUSAT_LIST.map(g=>'<option value="'+esc(g)+'"'+(ed&&ed.cluster===g?" selected":"")+'>'+esc(g)+'</option>').join("") + '</select></label>') +
+      '<label class="field"><span>Harga modal</span><input class="input" id="mc-price" inputmode="numeric" placeholder="Harga modal (Rp)" value="' + esc(ed?ed.price:"") + '"></label>' +
+      '<label class="field"><span>Harga program (opsional)</span><input class="input" id="mc-program" inputmode="numeric" placeholder="mis. 167" value="' + esc(ed&&ed.hargaProgram!==null&&ed.hargaProgram!==undefined?ed.hargaProgram:"") + '"></label>' +
+      '<button class="btn btn-primary" id="btn-manual-katalog" onclick="submitManualCatalog()">&#10003; ' + (ed ? "Simpan perubahan" : "Simpan produk") + '</button>' +
+      (ed ? '<button class="btn btn-ghost" onclick="cancelCatalogEdit()">Batal</button>' : '') +
     '</div>' +
   '</div>';
 
@@ -3193,8 +3237,8 @@ function renderKatalogBarang() {
       '<select class="input" onchange="onCatalogBrandFilter(this.value)"><option value="">Semua brand</option>' + brands.map(b=>'<option value="'+esc(b)+'"'+(b===state.ui.catalogBrandFilter?" selected":"")+'>'+esc(brandLabel(b))+'</option>').join("") + '</select>' +
       '<select class="input" onchange="onCatalogCategoryFilter(this.value)"><option value="">Semua kategori</option>' + categories.map(c=>'<option value="'+esc(c)+'"'+(c===state.ui.catalogCategoryFilter?" selected":"")+'>'+esc(categoryLabel(c))+'</option>').join("") + '</select>' +
     '</div>' +
-    '<div class="tbl-scroll" style="max-height:480px"><table class="tbl"><thead><tr><th>Kode</th><th>Nama produk</th><th>Brand</th><th>Kategori</th><th>Family paket</th><th>Cluster</th><th class="num">Harga modal</th><th class="num">Harga program</th></tr></thead><tbody>' +
-    filtered.map(p => '<tr><td class="muted">'+esc(p.id)+'</td><td>'+esc(p.name)+'</td><td>'+brandChip(p.brand)+'</td><td class="muted">'+esc(categoryLabel(p.category))+'</td><td class="muted">'+esc(p.familyPaket||"-")+'</td><td class="muted">'+esc(p.cluster||"-")+'</td><td class="num">'+nfmt(p.price)+'</td><td class="num">'+((p.hargaProgram===null||p.hargaProgram===undefined)?'<span class="muted">-</span>':nfmt(p.hargaProgram))+'</td></tr>').join("") +
+    '<div class="tbl-scroll" style="max-height:480px"><table class="tbl"><thead><tr><th>Kode</th><th>Nama produk</th><th>Brand</th><th>Kategori</th><th>Family paket</th><th>Cluster</th><th class="num">Harga modal</th><th class="num">Harga program</th>' + (canEditCatalog ? '<th>Aksi</th>' : '') + '</tr></thead><tbody>' +
+    filtered.map(p => '<tr><td class="muted">'+esc(p.id)+'</td><td>'+esc(p.name)+'</td><td>'+brandChip(p.brand)+'</td><td class="muted">'+esc(categoryLabel(p.category))+'</td><td class="muted">'+esc(p.familyPaket||"-")+'</td><td class="muted">'+esc(p.cluster||"-")+'</td><td class="num">'+nfmt(p.price)+'</td><td class="num">'+((p.hargaProgram===null||p.hargaProgram===undefined)?'<span class="muted">-</span>':nfmt(p.hargaProgram))+'</td>' + (canEditCatalog ? '<td><button class="btn btn-ghost" style="padding:3px 10px" onclick="editCatalogProduct(\'' + esc(p.id).replace(/'/g,"") + '\')">Edit</button></td>' : '') + '</tr>').join("") +
     '</tbody></table></div>' +
   '</div>';
 
@@ -3387,8 +3431,8 @@ const TABS = [
   { id: "katalog", label: "Katalog Barang" },
   { id: "pusat", label: "Gudang Pusat" },
   { id: "cabang", label: "Gudang Cabang" },
-  { id: "distribusi", label: "Distribusi ke Sales" },
-  { id: "stoksales", label: "Stok di Sales" },
+  { id: "distribusi", label: "Distribusi ke Team" },
+  { id: "stoksales", label: "Stok di Team" },
   { id: "upload", label: "Upload Penjualan" },
   { id: "status", label: "Status Barang" },
   { id: "riwayat", label: "Riwayat Transaksi" },
