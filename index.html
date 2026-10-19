@@ -283,7 +283,8 @@ async function loadProducts() {
     materialCode: p.material_code,
     familyPaket: p.family_paket,
     cluster: p.cluster,
-    price: p.price
+    price: p.price,
+    hargaProgram: (p.harga_program === null || p.harga_program === undefined) ? null : p.harga_program
   }));
 }
 
@@ -504,6 +505,12 @@ function rupiah(n) { return "Rp " + nfmt(Math.round(n || 0)); }
 function buildPriceMap() {
   const map = {};
   state.data.products.forEach(p => map[p.id] = p.price || 0);
+  return map;
+}
+// Harga program: kalau kosong, pakai harga modal (price) supaya produk biasa tidak berubah.
+function buildProgramPriceMap() {
+  const map = {};
+  state.data.products.forEach(p => map[p.id] = (p.hargaProgram === null || p.hargaProgram === undefined) ? (p.price || 0) : p.hargaProgram);
   return map;
 }
 function sumStockValue(stockObj, priceMap) {
@@ -1537,11 +1544,17 @@ async function applyCatalogImport() {
 
     // 1. Simpan semua produk (baru + update) dalam SATU batch upsert,
     //    bukan satu-satu - jauh lebih cepat untuk ratusan baris.
-    const productPayload = rows.map(r => ({
-      id: r.id, name: r.name, category: r.category, brand: r.brand,
-      material_code: r.materialCode, family_paket: r.familyPaket,
-      cluster: r.cluster, price: r.price
-    }));
+    // harga_program hanya ikut dikirim kalau kolomnya ada di file, supaya
+    // import lama (tanpa kolom itu) tidak menimpa harga program yang sudah tersimpan.
+    const productPayload = rows.map(r => {
+      const o = {
+        id: r.id, name: r.name, category: r.category, brand: r.brand,
+        material_code: r.materialCode, family_paket: r.familyPaket,
+        cluster: r.cluster, price: r.price
+      };
+      if (r.hasProgramCol) o.harga_program = r.hargaProgram;
+      return o;
+    });
     for (let i = 0; i < productPayload.length; i += 200) {
       const { error: prodErr } = await sb.from('products')
         .upsert(productPayload.slice(i, i + 200), { onConflict: 'id' });
@@ -1608,6 +1621,9 @@ async function submitManualCatalog() {
   const category = (document.getElementById('mc-category').value || "").trim();
   const familyPaket = (document.getElementById('mc-family').value || "").trim();
   const price = parsePrice(document.getElementById('mc-price').value);
+  const programRaw = (document.getElementById('mc-program').value || "").trim();
+  const hargaProgram = programRaw === "" ? null : parsePrice(programRaw);
+  if (hargaProgram !== null && hargaProgram > price) { notify("Harga program tidak boleh lebih besar dari harga modal", "error"); return; }
   // cluster selalu mengikuti login: admin pusat/cabang terkunci ke cluster
   // mereka sendiri, role lain (HQ) memilih dari daftar cluster nasional.
   const cluster = (isPusatAdmin() || isCabangAdmin())
@@ -1626,7 +1642,7 @@ async function submitManualCatalog() {
     const isNew = !existing;
 
     const { error: prodErr } = await sb.from('products').upsert([{
-      id, name, category, brand, material_code: "", family_paket: familyPaket, cluster, price
+      id, name, category, brand, material_code: "", family_paket: familyPaket, cluster, price, harga_program: hargaProgram
     }], { onConflict: 'id' });
     if (prodErr) throw prodErr;
 
@@ -1684,6 +1700,10 @@ function exportDashboardReport() {
   const masukPeriode = periodTx.filter(t=>t.type==="masuk" && inCluster(t.to)).reduce((a,t)=>a+t.qty,0);
   const terjualPeriode = periodTx.filter(t=>t.type==="penjualan" && inCluster(t.from)).reduce((a,t)=>a+t.qty,0);
   const pendingQty = state.data.returItems.filter(r=>r.status==="menunggu_penggantian" && inCluster(r.sourceId)).reduce((a,r)=>a+r.qty,0);
+  const terjualRows = periodTx.filter(t=>t.type==="penjualan" && inCluster(t.from));
+  const programMapX = buildProgramPriceMap();
+  const terjualModal = terjualRows.reduce((a,t)=>a+t.qty*(priceMap[t.productId]||0),0);
+  const terjualProgram = terjualRows.reduce((a,t)=>a+t.qty*(programMapX[t.productId]||0),0);
   const pLabel = periodLabel();
   downloadCSV("laporan_dashboard_" + (clusterFilter||"nasional") + ".csv",
     ["Metrik", "Periode", "Nilai (unit)"],
@@ -1694,6 +1714,9 @@ function exportDashboardReport() {
       ["Masuk", pLabel, masukPeriode],
       ["Terjual", pLabel, terjualPeriode],
       ["Menunggu Penggantian", "-", pendingQty],
+      ["Terjual - total harga modal (Rp)", pLabel, terjualModal],
+      ["Terjual - total harga program (Rp)", pLabel, terjualProgram],
+      ["Selisih penggantian principal (Rp)", pLabel, terjualModal - terjualProgram],
     ]
   );
 }
@@ -1717,18 +1740,18 @@ function downloadStockTemplate() {
     : "Template stok awal diunduh (kosong karena belum ada produk di cluster Anda).");
 }
 function downloadCatalogTemplate() {
-  const headers = ["Product ID", "Product Name", "Brand", "Category", "Sales Cluster", "Family Paket", "Material Code", "Harga Paket (Rp)"];
+  const headers = ["Product ID", "Product Name", "Brand", "Category", "Sales Cluster", "Family Paket", "Material Code", "Harga Paket (Rp)", "Harga Program"];
   // Gunakan produk milik cluster admin yang login saja (myClusterProducts),
   // bukan seluruh katalog nasional - supaya admin pusat cluster lain tidak
   // dapat Product ID yang bukan miliknya saat "Download template".
   const scoped = myClusterProducts();
   let rows;
   if (scoped.length) {
-    rows = scoped.map(p => [p.id, p.name, p.brand, p.category, p.cluster || "", p.familyPaket || "", p.materialCode || "", p.price]);
+    rows = scoped.map(p => [p.id, p.name, p.brand, p.category, p.cluster || "", p.familyPaket || "", p.materialCode || "", p.price, (p.hargaProgram === null || p.hargaProgram === undefined) ? "" : p.hargaProgram]);
   } else {
     rows = [
-      ["CONTOH-001", "Nama Produk Contoh", "XL", "SP", myCluster() || "Nama Cluster Anda", "Family Paket Contoh", "KODE-MATERIAL", 10000],
-      ["CONTOH-002", "Nama Produk Contoh 2", "SMARTFREN", "PV", myCluster() || "Nama Cluster Anda", "Family Paket Contoh", "KODE-MATERIAL", 500],
+      ["CONTOH-001", "Nama Produk Contoh", "XL", "SP", myCluster() || "Nama Cluster Anda", "Family Paket Contoh", "KODE-MATERIAL", 10000, ""],
+      ["CONTOH-002", "Nama Produk Contoh 2", "SMARTFREN", "PV", myCluster() || "Nama Cluster Anda", "Family Paket Contoh", "KODE-MATERIAL", 500, 167],
     ];
   }
   downloadCSV("template_katalog_barang.csv", headers, rows);
@@ -2435,6 +2458,17 @@ function renderDashboard() {
   const masukPeriodeValue = periodTx.filter(t=>(t.type==="masuk"||t.type==="penggantian_masuk") && inCluster(t.to)).reduce((a,t)=>a+t.qty*(priceMap[t.productId]||0),0);
   const terjualPeriodeValue = terjualTx.reduce((a,t)=>a+t.qty*(priceMap[t.productId]||0),0);
 
+  // Dua harga: modal (price) vs program (harga_program, fallback ke modal kalau kosong).
+  // Selisih penggantian principal HANYA dari barang terjual: qty x (modal - program).
+  const programMap = buildProgramPriceMap();
+  const totalStokModal = totalPusatValue + totalCabangValue + totalSalesValue;
+  const totalStokProgram =
+    pusatWarehouses.reduce((acc,w)=>acc+sumStockValue(state.data.stock[w.id], programMap),0) +
+    cabangWarehouses.reduce((acc,w)=>acc+sumStockValue(state.data.stock[w.id], programMap),0) +
+    salesIds.reduce((acc,id)=>acc+sumStockValue(state.data.salesStock[id], programMap),0);
+  const terjualProgramValue = terjualTx.reduce((a,t)=>a+t.qty*(programMap[t.productId]||0),0);
+  const selisihPrincipal = terjualPeriodeValue - terjualProgramValue;
+
   const { start, end } = getPeriodRange();
   const spanDays = (start && end) ? Math.ceil((end-start)/86400000) : null;
   const groupByMonth = spanDays !== null && spanDays > 31;
@@ -2475,6 +2509,15 @@ function renderDashboard() {
       statCard("Masuk (" + pLabel + ")", nfmt(masukPeriode), "emerald", rupiah(masukPeriodeValue)) +
       statCard("Terjual (" + pLabel + ")", nfmt(terjualPeriode), "rose", rupiah(terjualPeriodeValue)) +
       statCard("Menunggu Penggantian", nfmt(pendingQty), "amber", pendingReplacement.length + " laporan") +
+    '</div>' +
+    '<div class="section"><div class="section-head"><h3>Total amount: harga modal vs harga program</h3></div>' +
+      '<div class="grid grid-3">' +
+        statCard("Stok - total harga modal", rupiah(totalStokModal), "indigo", nfmt(totalPusat+totalCabang+totalSales) + " unit") +
+        statCard("Stok - total harga program", rupiah(totalStokProgram), "blue", "Produk tanpa harga program dihitung harga modal") +
+        statCard("Terjual (" + pLabel + ") - harga modal", rupiah(terjualPeriodeValue), "rose", nfmt(terjualPeriode) + " unit") +
+        statCard("Terjual (" + pLabel + ") - harga program", rupiah(terjualProgramValue), "slate", nfmt(terjualPeriode) + " unit") +
+        statCard("Selisih penggantian principal", rupiah(selisihPrincipal), "amber", "Dari barang terjual: modal - program") +
+      '</div>' +
     '</div>' +
     '<div class="section flow-section"><div class="section-head"><h3>Alur perputaran barang</h3></div>' +
       '<div class="flow-row">' +
@@ -3038,12 +3081,16 @@ function parsePrice(v) {
   return digits ? parseInt(digits, 10) : 0;
 }
 function buildCatalogRows(dataRows) {
+  // Kolom Harga Program dianggap ada kalau header-nya ada di file (walau sebagian baris kosong)
+  const hasProgramCol = dataRows.some(r => Object.keys(r).some(k => normKey(k) === "hargaprogram" || normKey(k) === "program"));
   return dataRows.map((r, i) => {
     let id = pickField(r, ["Product ID","id","sku","kode","kode produk"]).toString().trim();
     const name = pickField(r, ["Product Name","nama produk","nama","name"]).toString().trim();
     const brand = pickField(r, ["Brand","merek"]).toString().trim();
     const category = pickField(r, ["Category","kategori"]).toString().trim();
     const price = parsePrice(pickField(r, ["Harga Paket (Rp)","Harga Paket","harga","price"]));
+    const progRaw = pickField(r, ["Harga Program","harga program","program"]);
+    const hargaProgram = progRaw === "" ? null : parsePrice(progRaw);
     const cluster = pickField(r, ["Sales Cluster","nama cluster gudang","cluster"]).toString().trim();
     const familyPaket = pickField(r, ["Family Paket","family","paket"]).toString().trim();
     const materialCode = pickField(r, ["Material Code","kode material"]).toString().trim();
@@ -3053,7 +3100,7 @@ function buildCatalogRows(dataRows) {
     if (!name || !brand) { status = "error"; issue = "Nama produk / brand kosong"; }
     else if (state.data.products.find(p => p.id === id)) { status = "update"; }
 
-    return { key: i, id, name, brand, category, price, cluster, familyPaket, materialCode, status, issue };
+    return { key: i, id, name, brand, category, price, hargaProgram, hasProgramCol, cluster, familyPaket, materialCode, status, issue };
   });
 }
 function handleCatalogFile(input) {
@@ -3124,7 +3171,8 @@ function renderKatalogBarang() {
       ((isPusatAdmin()||isCabangAdmin())
         ? '<label class="field"><span>Cluster</span><input class="input" id="mc-cluster" value="' + esc(myCluster()||"") + '" disabled></label>'
         : '<label class="field"><span>Cluster</span><select class="input" id="mc-cluster"><option value="">Pilih cluster</option>' + GUDANG_PUSAT_LIST.map(g=>'<option value="'+esc(g)+'">'+esc(g)+'</option>').join("") + '</select></label>') +
-      '<label class="field"><span>Harga</span><input class="input" id="mc-price" inputmode="numeric" placeholder="Harga paket (Rp)"></label>' +
+      '<label class="field"><span>Harga modal</span><input class="input" id="mc-price" inputmode="numeric" placeholder="Harga modal (Rp)"></label>' +
+      '<label class="field"><span>Harga program (opsional)</span><input class="input" id="mc-program" inputmode="numeric" placeholder="mis. 167"></label>' +
       '<button class="btn btn-primary" id="btn-manual-katalog" onclick="submitManualCatalog()">&#10003; Simpan produk</button>' +
     '</div>' +
   '</div>';
@@ -3145,8 +3193,8 @@ function renderKatalogBarang() {
       '<select class="input" onchange="onCatalogBrandFilter(this.value)"><option value="">Semua brand</option>' + brands.map(b=>'<option value="'+esc(b)+'"'+(b===state.ui.catalogBrandFilter?" selected":"")+'>'+esc(brandLabel(b))+'</option>').join("") + '</select>' +
       '<select class="input" onchange="onCatalogCategoryFilter(this.value)"><option value="">Semua kategori</option>' + categories.map(c=>'<option value="'+esc(c)+'"'+(c===state.ui.catalogCategoryFilter?" selected":"")+'>'+esc(categoryLabel(c))+'</option>').join("") + '</select>' +
     '</div>' +
-    '<div class="tbl-scroll" style="max-height:480px"><table class="tbl"><thead><tr><th>Kode</th><th>Nama produk</th><th>Brand</th><th>Kategori</th><th>Family paket</th><th>Cluster</th><th class="num">Harga</th></tr></thead><tbody>' +
-    filtered.map(p => '<tr><td class="muted">'+esc(p.id)+'</td><td>'+esc(p.name)+'</td><td>'+brandChip(p.brand)+'</td><td class="muted">'+esc(categoryLabel(p.category))+'</td><td class="muted">'+esc(p.familyPaket||"-")+'</td><td class="muted">'+esc(p.cluster||"-")+'</td><td class="num">'+nfmt(p.price)+'</td></tr>').join("") +
+    '<div class="tbl-scroll" style="max-height:480px"><table class="tbl"><thead><tr><th>Kode</th><th>Nama produk</th><th>Brand</th><th>Kategori</th><th>Family paket</th><th>Cluster</th><th class="num">Harga modal</th><th class="num">Harga program</th></tr></thead><tbody>' +
+    filtered.map(p => '<tr><td class="muted">'+esc(p.id)+'</td><td>'+esc(p.name)+'</td><td>'+brandChip(p.brand)+'</td><td class="muted">'+esc(categoryLabel(p.category))+'</td><td class="muted">'+esc(p.familyPaket||"-")+'</td><td class="muted">'+esc(p.cluster||"-")+'</td><td class="num">'+nfmt(p.price)+'</td><td class="num">'+((p.hargaProgram===null||p.hargaProgram===undefined)?'<span class="muted">-</span>':nfmt(p.hargaProgram))+'</td></tr>').join("") +
     '</tbody></table></div>' +
   '</div>';
 
