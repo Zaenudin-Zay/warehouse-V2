@@ -1711,9 +1711,12 @@ function exportDashboardReport() {
   const terjualPeriode = periodTx.filter(t=>t.type==="penjualan" && inCluster(t.from)).reduce((a,t)=>a+t.qty,0);
   const pendingQty = state.data.returItems.filter(r=>r.status==="menunggu_penggantian" && inCluster(r.sourceId)).reduce((a,r)=>a+r.qty,0);
   const terjualRows = periodTx.filter(t=>t.type==="penjualan" && inCluster(t.from));
-  const programMapX = buildProgramPriceMap();
+  const progById = {};
+  state.data.products.forEach(pr => { if (pr.hargaProgram !== null && pr.hargaProgram !== undefined) progById[pr.id] = pr.hargaProgram; });
   const terjualModal = terjualRows.reduce((a,t)=>a+t.qty*(priceMap[t.productId]||0),0);
-  const terjualProgram = terjualRows.reduce((a,t)=>a+t.qty*(programMapX[t.productId]||0),0);
+  const progRows = terjualRows.filter(t => progById[t.productId] !== undefined);
+  const terjualProgram = progRows.reduce((a,t)=>a+t.qty*progById[t.productId],0);
+  const terjualProgramModalX = progRows.reduce((a,t)=>a+t.qty*(priceMap[t.productId]||0),0);
   const pLabel = periodLabel();
   downloadCSV("laporan_dashboard_" + (clusterFilter||"nasional") + ".csv",
     ["Metrik", "Periode", "Nilai (unit)"],
@@ -1726,7 +1729,7 @@ function exportDashboardReport() {
       ["Menunggu Penggantian", "-", pendingQty],
       ["Terjual - total harga modal (Rp)", pLabel, terjualModal],
       ["Terjual - total harga program (Rp)", pLabel, terjualProgram],
-      ["Selisih penggantian principal (Rp)", pLabel, terjualModal - terjualProgram],
+      ["Selisih penggantian principal (Rp)", pLabel, terjualProgramModalX - terjualProgram],
     ]
   );
 }
@@ -2471,14 +2474,16 @@ function renderDashboard() {
 
   // Dua harga: modal (price) vs program (harga_program, fallback ke modal kalau kosong).
   // Selisih penggantian principal HANYA dari barang terjual: qty x (modal - program).
-  const programMap = buildProgramPriceMap();
+  // Harga program hanya dihitung untuk barang terjual yang punya harga program.
+  // Barang tanpa harga program tidak masuk kartu program (qty dan amount ikut yang berprogram saja).
+  const programProducts = {};
+  state.data.products.forEach(pr => { if (pr.hargaProgram !== null && pr.hargaProgram !== undefined) programProducts[pr.id] = pr; });
+  const terjualProgramTx = terjualTx.filter(t => programProducts[t.productId]);
+  const terjualProgramQty = terjualProgramTx.reduce((a,t)=>a+t.qty,0);
+  const terjualProgramValue = terjualProgramTx.reduce((a,t)=>a+t.qty*programProducts[t.productId].hargaProgram,0);
+  const terjualProgramModal = terjualProgramTx.reduce((a,t)=>a+t.qty*(priceMap[t.productId]||0),0);
   const totalStokModal = totalPusatValue + totalCabangValue + totalSalesValue;
-  const totalStokProgram =
-    pusatWarehouses.reduce((acc,w)=>acc+sumStockValue(state.data.stock[w.id], programMap),0) +
-    cabangWarehouses.reduce((acc,w)=>acc+sumStockValue(state.data.stock[w.id], programMap),0) +
-    salesIds.reduce((acc,id)=>acc+sumStockValue(state.data.salesStock[id], programMap),0);
-  const terjualProgramValue = terjualTx.reduce((a,t)=>a+t.qty*(programMap[t.productId]||0),0);
-  const selisihPrincipal = terjualPeriodeValue - terjualProgramValue;
+  const selisihPrincipal = terjualProgramModal - terjualProgramValue;
 
   const { start, end } = getPeriodRange();
   const spanDays = (start && end) ? Math.ceil((end-start)/86400000) : null;
@@ -2522,12 +2527,11 @@ function renderDashboard() {
       statCard("Menunggu Penggantian", nfmt(pendingQty), "amber", pendingReplacement.length + " laporan") +
     '</div>' +
     '<div class="section"><div class="section-head"><h3>Total amount: harga modal vs harga program</h3></div>' +
-      '<div class="grid grid-3">' +
+      '<div class="grid grid-2">' +
         statCard("Stok - total harga modal", rupiah(totalStokModal), "indigo", nfmt(totalPusat+totalCabang+totalSales) + " unit") +
-        statCard("Stok - total harga program", rupiah(totalStokProgram), "blue", "Produk tanpa harga program dihitung harga modal") +
         statCard("Terjual (" + pLabel + ") - harga modal", rupiah(terjualPeriodeValue), "rose", nfmt(terjualPeriode) + " unit") +
-        statCard("Terjual (" + pLabel + ") - harga program", rupiah(terjualProgramValue), "slate", nfmt(terjualPeriode) + " unit") +
-        statCard("Selisih penggantian principal", rupiah(selisihPrincipal), "amber", "Dari barang terjual: modal - program") +
+        statCard("Terjual (" + pLabel + ") - harga program", rupiah(terjualProgramValue), "slate", nfmt(terjualProgramQty) + " unit (produk berharga program)") +
+        statCard("Selisih penggantian principal", rupiah(selisihPrincipal), "amber", "Dari barang terjual berharga program: modal - program") +
       '</div>' +
     '</div>' +
     '<div class="section flow-section"><div class="section-head"><h3>Alur perputaran barang</h3></div>' +
