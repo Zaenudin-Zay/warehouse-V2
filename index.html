@@ -1885,31 +1885,60 @@ function exportSalesData() {
   downloadCSV("export_daftar_sales.csv", headers, rows);
   notify("Daftar sales berhasil diunduh");
 }
-// Gudang yang boleh dipakai user saat menambah/mengubah sales lewat import.
-// HQ = semua (null). Admin pusat = gudang pusat sendiri. Admin cabang = cabang sendiri.
+// Gudang yang boleh dipakai user saat menambah/mengubah sales.
+// HQ = semua (null). Admin pusat = gudang pusat sendiri + gudang cabang di cluster yang sama.
+// Admin cabang = cabang sendiri.
+function allowedSalesGudangIds() {
+  if (isHQ()) return null;
+  if (isCabangAdmin()) return [myCabangId()];
+  if (isPusatAdmin()) {
+    const cl = myCluster();
+    return state.data.warehouses.filter(w => w.id === myGudangPusatId() || (cl && warehouseCluster(w) === cl)).map(w => w.id);
+  }
+  return [];
+}
 function ownSalesGudangId() {
   if (isPusatAdmin()) return myGudangPusatId();
   if (isCabangAdmin()) return myCabangId();
   return null;
 }
+// Sales yang boleh dilihat user login (dipakai Stok di Team & Distribusi ke Team)
+function mySalesTeam() {
+  const allowed = allowedSalesGudangIds();
+  return allowed === null ? state.data.salesTeam : state.data.salesTeam.filter(s => allowed.includes(s.gudang));
+}
+// Pencocokan nama gudang di import sales: pakai teks di file apa adanya (tidak dipaksa ke gudang sendiri),
+// toleran spasi/tanda baca/"Stokist" vs "Stokis".
+function gudangKey(v) { return normalize(v).replace(/stokist/g, "stokis").replace(/[^a-z0-9]/g, ""); }
+function matchSalesGudang(label) {
+  const k = gudangKey(label);
+  if (!k) return null;
+  const whs = state.data.warehouses;
+  const exact = whs.find(w => gudangKey(w.name) === k);
+  if (exact) return exact;
+  const cands = whs.filter(w => { const wk = gudangKey(w.name); return wk.includes(k) || k.includes(wk); });
+  return cands.length === 1 ? cands[0] : null;
+}
 function buildSalesImportRows(dataRows) {
   const seenIds = {};
+  const allowed = allowedSalesGudangIds();
+  const ownId = ownSalesGudangId();
   return dataRows.map((r, i) => {
     const id = pickField(r, ["ID Sales","id sales","canvasser id","sales id","id"]).toString().trim();
     const name = pickField(r, ["Nama Sales","nama sales","name","canvasser name"]).toString().trim();
     const gudangRaw = pickField(r, ["Gudang","warehouse","lokasi"]).toString().trim();
     const supervisor = pickField(r, ["Supervisor","atasan"]).toString().trim();
     const posisi = normPosisi(pickField(r, ["Posisi","position","jabatan"]));
-    const ownId = ownSalesGudangId();
-    let wh = gudangRaw ? matchWarehouseByLabel(gudangRaw) : null;
+    let wh = gudangRaw ? matchSalesGudang(gudangRaw) : null;
     // Non-HQ: kolom Gudang kosong otomatis diisi gudang milik sendiri
     if (!gudangRaw && ownId) wh = state.data.warehouses.find(w => w.id === ownId) || null;
     const existingSales = id ? state.data.salesTeam.find(s => s.id.toLowerCase() === id.toLowerCase()) : null;
 
     let status = "new", issue = "";
     if (!id || !name) { status = "error"; issue = "ID Sales / Nama Sales kosong"; }
-    else if (ownId && wh && wh.id !== ownId) { status = "error"; issue = 'Gudang "' + wh.name + '" di luar akses Anda (hanya boleh gudang Anda sendiri)'; }
-    else if (ownId && existingSales && existingSales.gudang !== ownId) { status = "error"; issue = "ID Sales sudah terdaftar di gudang lain"; }
+    else if (allowed && gudangRaw && !wh) { status = "error"; issue = 'Gudang "' + gudangRaw + '" tidak dikenali'; }
+    else if (allowed && wh && !allowed.includes(wh.id)) { status = "error"; issue = 'Gudang "' + wh.name + '" di luar cluster Anda'; }
+    else if (allowed && existingSales && existingSales.gudang && !allowed.includes(existingSales.gudang)) { status = "error"; issue = "ID Sales sudah terdaftar di gudang cluster lain"; }
     else if (seenIds[id.toLowerCase()]) { status = "error"; issue = "ID Sales duplikat di file ini"; }
     else if (existingSales) { status = "update"; }
 
@@ -2785,9 +2814,7 @@ function posisiFilterSelect(current, handler) {
 function onDistPosisiFilter(v) { state.ui.distPosisiFilter = v; render(); }
 function onStokPosisiFilter(v) { state.ui.stokPosisiFilter = v; render(); }
 function renderDistribusi() {
-  const salesListAll = isCabangAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myCabangId())
-    : isPusatAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myGudangPusatId())
-    : state.data.salesTeam;
+  const salesListAll = mySalesTeam();
   const salesList = state.ui.distPosisiFilter ? salesListAll.filter(s=>s.posisi===state.ui.distPosisiFilter) : salesListAll;
   const warehouseOptions = isCabangAdmin() ? state.data.warehouses.filter(w=>w.id===myCabangId())
     : isPusatAdmin() ? state.data.warehouses.filter(w=>w.id===myGudangPusatId())
@@ -2888,9 +2915,7 @@ function onReturSales() {
 }
 
 function renderStokSales() {
-  const baseTeam = isCabangAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myCabangId())
-    : isPusatAdmin() ? state.data.salesTeam.filter(s=>s.gudang===myGudangPusatId())
-    : state.data.salesTeam;
+  const baseTeam = mySalesTeam();
   const myTeam = state.ui.stokPosisiFilter ? baseTeam.filter(s=>s.posisi===state.ui.stokPosisiFilter) : baseTeam;
   if (state.ui.salesSelectedStok && !myTeam.find(s=>s.id===state.ui.salesSelectedStok)) state.ui.salesSelectedStok = "";
   if (!state.ui.salesSelectedStok && myTeam[0]) state.ui.salesSelectedStok = myTeam[0].id;
@@ -2898,9 +2923,7 @@ function renderStokSales() {
   const salesInfo = myTeam.find(s=>s.id===salesId);
   const stock = state.data.salesStock[salesId] || {};
   const total = Object.values(stock).reduce((a,b)=>a+b,0);
-  const gudangOptions = isCabangAdmin() ? state.data.warehouses.filter(w=>w.id===myCabangId())
-    : isPusatAdmin() ? state.data.warehouses.filter(w=>w.id===myGudangPusatId())
-    : state.data.warehouses;
+  const gudangOptions = allowedSalesGudangIds() ? state.data.warehouses.filter(w=>allowedSalesGudangIds().includes(w.id)) : state.data.warehouses;
 
   const addForm = '<div id="add-sales-box" style="display:none"><div class="section"><div class="section-head"><h3>Tambah anggota tim sales</h3></div>' +
       '<div class="row" style="align-items:flex-end">' +
@@ -2921,7 +2944,7 @@ function renderStokSales() {
         '<button class="btn btn-ghost" onclick="exportSalesData()">&#8681; Export daftar sales</button>' +
       '</div>' +
     '</div>' +
-    '<p class="muted" style="font-size:13px;color:#5d7a80">Unggah file <code class="inline">.xlsx</code> atau <code class="inline">.csv</code> dengan kolom <code class="inline">ID Sales</code>, <code class="inline">Nama Sales</code>, <code class="inline">Gudang</code>, <code class="inline">Supervisor</code>, dan <code class="inline">Posisi</code> (Canvasser / Promotor / Supervisor). ID Sales yang sudah ada akan diperbarui datanya, ID Sales baru akan otomatis ditambahkan (stok awal 0). Nilai <code class="inline">Gudang</code> harus sama dengan nama gudang yang ada di sistem, mis. ' + (ownSalesGudangId() ? '"' + esc((state.data.warehouses.find(w=>w.id===ownSalesGudangId())||{}).name||"") + '" (akses Anda hanya gudang ini; kolom Gudang kosong otomatis diisi gudang Anda)' : state.data.warehouses.map(w=>'"'+esc(w.name)+'"').join(", ")) + '.</p>' +
+    '<p class="muted" style="font-size:13px;color:#5d7a80">Unggah file <code class="inline">.xlsx</code> atau <code class="inline">.csv</code> dengan kolom <code class="inline">ID Sales</code>, <code class="inline">Nama Sales</code>, <code class="inline">Gudang</code>, <code class="inline">Supervisor</code>, dan <code class="inline">Posisi</code> (Canvasser / Promotor / Supervisor). ID Sales yang sudah ada akan diperbarui datanya, ID Sales baru akan otomatis ditambahkan (stok awal 0). Nilai <code class="inline">Gudang</code> harus sama dengan nama gudang yang ada di sistem, mis. ' + (allowedSalesGudangIds() ? state.data.warehouses.filter(w=>allowedSalesGudangIds().includes(w.id)).map(w=>'"'+esc(w.name)+'"').join(", ") + ' (akses Anda: gudang di cluster Anda; kolom Gudang kosong otomatis diisi gudang Anda)' : state.data.warehouses.map(w=>'"'+esc(w.name)+'"').join(", ")) + '.</p>' +
     '<div class="row"><input type="file" accept=".csv,.xlsx,.xls" onchange="handleSalesImportFile(this)">' + (state.ui.salesImportFileName ? '<span class="muted">'+esc(state.ui.salesImportFileName)+'</span>' : '') + '</div>' +
     (importRows.length ? (
       '<div style="margin-top:14px"><div class="section-head"><h3 style="font-size:13px">Preview (' + importOk + '/' + importRows.length + ' baris siap)</h3>' +
