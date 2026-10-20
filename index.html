@@ -1885,6 +1885,13 @@ function exportSalesData() {
   downloadCSV("export_daftar_sales.csv", headers, rows);
   notify("Daftar sales berhasil diunduh");
 }
+// Gudang yang boleh dipakai user saat menambah/mengubah sales lewat import.
+// HQ = semua (null). Admin pusat = gudang pusat sendiri. Admin cabang = cabang sendiri.
+function ownSalesGudangId() {
+  if (isPusatAdmin()) return myGudangPusatId();
+  if (isCabangAdmin()) return myCabangId();
+  return null;
+}
 function buildSalesImportRows(dataRows) {
   const seenIds = {};
   return dataRows.map((r, i) => {
@@ -1893,12 +1900,18 @@ function buildSalesImportRows(dataRows) {
     const gudangRaw = pickField(r, ["Gudang","warehouse","lokasi"]).toString().trim();
     const supervisor = pickField(r, ["Supervisor","atasan"]).toString().trim();
     const posisi = normPosisi(pickField(r, ["Posisi","position","jabatan"]));
-    const wh = gudangRaw ? matchWarehouseByLabel(gudangRaw) : null;
+    const ownId = ownSalesGudangId();
+    let wh = gudangRaw ? matchWarehouseByLabel(gudangRaw) : null;
+    // Non-HQ: kolom Gudang kosong otomatis diisi gudang milik sendiri
+    if (!gudangRaw && ownId) wh = state.data.warehouses.find(w => w.id === ownId) || null;
+    const existingSales = id ? state.data.salesTeam.find(s => s.id.toLowerCase() === id.toLowerCase()) : null;
 
     let status = "new", issue = "";
     if (!id || !name) { status = "error"; issue = "ID Sales / Nama Sales kosong"; }
+    else if (ownId && wh && wh.id !== ownId) { status = "error"; issue = 'Gudang "' + wh.name + '" di luar akses Anda (hanya boleh gudang Anda sendiri)'; }
+    else if (ownId && existingSales && existingSales.gudang !== ownId) { status = "error"; issue = "ID Sales sudah terdaftar di gudang lain"; }
     else if (seenIds[id.toLowerCase()]) { status = "error"; issue = "ID Sales duplikat di file ini"; }
-    else if (state.data.salesTeam.find(s => s.id.toLowerCase() === id.toLowerCase())) { status = "update"; }
+    else if (existingSales) { status = "update"; }
 
     if (status !== "error" && gudangRaw && !wh) { issue = 'Gudang "' + gudangRaw + '" tidak dikenali (dikosongkan)'; }
     if (id) seenIds[id.toLowerCase()] = true;
@@ -2908,13 +2921,13 @@ function renderStokSales() {
         '<button class="btn btn-ghost" onclick="exportSalesData()">&#8681; Export daftar sales</button>' +
       '</div>' +
     '</div>' +
-    '<p class="muted" style="font-size:13px;color:#5d7a80">Unggah file <code class="inline">.xlsx</code> atau <code class="inline">.csv</code> dengan kolom <code class="inline">ID Sales</code>, <code class="inline">Nama Sales</code>, <code class="inline">Gudang</code>, dan <code class="inline">Supervisor</code>. ID Sales yang sudah ada akan diperbarui datanya, ID Sales baru akan otomatis ditambahkan (stok awal 0). Nilai <code class="inline">Gudang</code> harus sama dengan nama gudang yang ada di sistem, mis. ' + state.data.warehouses.map(w=>'"'+esc(w.name)+'"').join(", ") + '.</p>' +
+    '<p class="muted" style="font-size:13px;color:#5d7a80">Unggah file <code class="inline">.xlsx</code> atau <code class="inline">.csv</code> dengan kolom <code class="inline">ID Sales</code>, <code class="inline">Nama Sales</code>, <code class="inline">Gudang</code>, <code class="inline">Supervisor</code>, dan <code class="inline">Posisi</code> (Canvasser / Promotor / Supervisor). ID Sales yang sudah ada akan diperbarui datanya, ID Sales baru akan otomatis ditambahkan (stok awal 0). Nilai <code class="inline">Gudang</code> harus sama dengan nama gudang yang ada di sistem, mis. ' + (ownSalesGudangId() ? '"' + esc((state.data.warehouses.find(w=>w.id===ownSalesGudangId())||{}).name||"") + '" (akses Anda hanya gudang ini; kolom Gudang kosong otomatis diisi gudang Anda)' : state.data.warehouses.map(w=>'"'+esc(w.name)+'"').join(", ")) + '.</p>' +
     '<div class="row"><input type="file" accept=".csv,.xlsx,.xls" onchange="handleSalesImportFile(this)">' + (state.ui.salesImportFileName ? '<span class="muted">'+esc(state.ui.salesImportFileName)+'</span>' : '') + '</div>' +
     (importRows.length ? (
       '<div style="margin-top:14px"><div class="section-head"><h3 style="font-size:13px">Preview (' + importOk + '/' + importRows.length + ' baris siap)</h3>' +
         '<button class="btn btn-primary" ' + (importOk===0?"disabled":"") + ' onclick="applySalesImport()">&#10003; Terapkan ' + importOk + ' baris</button></div>' +
-        '<div class="tbl-scroll" style="max-height:340px"><table class="tbl"><thead><tr><th>ID Sales</th><th>Nama</th><th>Gudang</th><th>Supervisor</th><th>Status</th></tr></thead><tbody>' +
-        importRows.map(r => '<tr><td class="muted">'+esc(r.id)+'</td><td>'+esc(r.name)+'</td><td class="muted">'+esc(r.gudangLabel||"-")+'</td><td class="muted">'+esc(r.supervisor||"-")+'</td><td>' +
+        '<div class="tbl-scroll" style="max-height:340px"><table class="tbl"><thead><tr><th>ID Sales</th><th>Nama</th><th>Gudang</th><th>Supervisor</th><th>Posisi</th><th>Status</th></tr></thead><tbody>' +
+        importRows.map(r => '<tr><td class="muted">'+esc(r.id)+'</td><td>'+esc(r.name)+'</td><td class="muted">'+esc(r.gudangLabel||"-")+'</td><td class="muted">'+esc(r.supervisor||"-")+'</td><td class="muted">'+esc(r.posisi||"-")+'</td><td>' +
           (r.status==="new" ? '<span class="badge badge-ok">Baru</span>' : r.status==="update" ? '<span class="badge badge-transfer">Update</span>' : '<span class="badge badge-err">&#9888; '+esc(r.issue)+'</span>') +
           (r.status!=="error" && r.issue ? '<div class="muted" style="font-size:11px">'+esc(r.issue)+'</div>' : '') +
           '</td></tr>').join("") +
