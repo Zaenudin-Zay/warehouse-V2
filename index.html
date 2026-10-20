@@ -2923,6 +2923,7 @@ function renderStokSales() {
   const salesInfo = myTeam.find(s=>s.id===salesId);
   const stock = state.data.salesStock[salesId] || {};
   const total = Object.values(stock).reduce((a,b)=>a+b,0);
+  const totalAmount = sumStockValue(stock, buildPriceMap());
   const gudangOptions = allowedSalesGudangIds() ? state.data.warehouses.filter(w=>allowedSalesGudangIds().includes(w.id)) : state.data.warehouses;
 
   const addForm = '<div id="add-sales-box" style="display:none"><div class="section"><div class="section-head"><h3>Tambah anggota tim sales</h3></div>' +
@@ -2987,7 +2988,7 @@ function renderStokSales() {
     addForm +
     importBox +
     '<div class="grid grid-3">' +
-      statCard("Total unit dipegang", nfmt(total), "slate") +
+      statCard("Total unit dipegang", nfmt(total), "slate", "Total amount: " + rupiah(totalAmount)) +
       statCard("ID Sales", esc(salesId), "indigo") +
       statCard("Gudang & Supervisor", esc((state.data.warehouses.find(w=>w.id===(salesInfo?salesInfo.gudang:""))||{}).name || "-"), "blue", "Posisi: " + ((salesInfo && salesInfo.posisi) || "-") + " | " + (salesInfo && salesInfo.supervisor ? "Supervisor: " + salesInfo.supervisor : "Supervisor: -")) +
     '</div>' +
