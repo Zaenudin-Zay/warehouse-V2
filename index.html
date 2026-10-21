@@ -221,6 +221,16 @@
   .bar-fill { background: var(--red); height: 100%; border-radius: 5px; }
   .bar-val { width: 42px; text-align: right; font-weight: 600; color: var(--ink); }
 
+
+  /* progress overlay upload/proses data */
+  #progress-overlay { position: fixed; inset: 0; background: rgba(18,0,43,.55); z-index: 200; display: none; align-items: center; justify-content: center; }
+  #progress-overlay.show { display: flex; }
+  .progress-card { width: 420px; max-width: 90vw; background: #fff; border-radius: 14px; padding: 22px 24px; box-shadow: 0 20px 50px rgba(0,0,0,.35); }
+  .progress-title { font-size: 15px; font-weight: 700; color: var(--ink); margin-bottom: 4px; }
+  .progress-text { font-size: 12.5px; color: var(--ink-muted); margin-bottom: 14px; min-height: 18px; }
+  .progress-track { height: 12px; background: #efe9f5; border-radius: 999px; overflow: hidden; }
+  .progress-fill { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, var(--red), var(--mint)); transition: width .15s ease; }
+  .progress-pct { margin-top: 8px; text-align: right; font-size: 13px; font-weight: 700; color: var(--ink); }
   .legend-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-muted); margin-top: 4px; }
 </style>
 </head>
@@ -1139,27 +1149,107 @@ function buildAllocationRows(dataRows) {
     };
   });
 }
-function handleAllocationFile(input) {
+// ---------------- progress proses upload (persentase) ----------------
+const tick = () => new Promise(r => setTimeout(r, 0));
+function progressEl() {
+  let el = document.getElementById("progress-overlay");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "progress-overlay";
+    el.innerHTML = '<div class="progress-card"><div class="progress-title" id="pg-title"></div><div class="progress-text" id="pg-text"></div>' +
+      '<div class="progress-track"><div class="progress-fill" id="pg-fill"></div></div><div class="progress-pct" id="pg-pct">0%</div></div>';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function progressStart(title, text) {
+  const el = progressEl();
+  document.getElementById("pg-title").textContent = title || "Memproses...";
+  document.getElementById("pg-text").textContent = text || "";
+  document.getElementById("pg-fill").style.width = "0%";
+  document.getElementById("pg-pct").textContent = "0%";
+  el.classList.add("show");
+}
+function progressSet(pct, text) {
+  const v = Math.max(0, Math.min(100, Math.round(pct)));
+  progressEl();
+  document.getElementById("pg-fill").style.width = v + "%";
+  document.getElementById("pg-pct").textContent = v + "%";
+  if (text !== undefined) document.getElementById("pg-text").textContent = text;
+}
+function progressEnd() { const el = document.getElementById("progress-overlay"); if (el) el.classList.remove("show"); }
+// Tracker: progres dihitung dari jumlah baris yang sudah terkirim; sisa (reservePct) untuk muat ulang data.
+function makeProgress(title, totalUnits, reservePct) {
+  reservePct = reservePct === undefined ? 8 : reservePct;
+  progressStart(title, "Menyiapkan...");
+  let done = 0;
+  const total = Math.max(1, totalUnits);
+  return {
+    async advance(n, text) { done += n; progressSet((done / total) * (100 - reservePct), text); await tick(); },
+    async reloading(text) { progressSet(100 - reservePct, text || "Memuat ulang data..."); await tick(); },
+    async end(text) { progressSet(100, text || "Selesai"); await tick(); setTimeout(progressEnd, 450); },
+    fail() { progressEnd(); }
+  };
+}
+async function pgChunks(pg, rows, size, label, fn) {
+  for (let i = 0; i < rows.length; i += size) {
+    const part = rows.slice(i, i + size);
+    await fn(part);
+    await pg.advance(part.length, label + " (" + nfmt(Math.min(i + size, rows.length)) + "/" + nfmt(rows.length) + ")");
+  }
+}
+// Baca file CSV/Excel dengan persentase nyata, lalu bangun baris preview.
+function parseTableFile(file, cellDates) {
+  return new Promise((resolve, reject) => {
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (ext === "csv") {
+      const rows = [];
+      Papa.parse(file, { header: true, skipEmptyLines: true, chunkSize: 256 * 1024,
+        chunk: (res) => {
+          for (let i = 0; i < res.data.length; i++) rows.push(res.data[i]);
+          const pct = file.size ? Math.min(85, (res.meta.cursor / file.size) * 85) : 50;
+          progressSet(pct, "Membaca CSV: " + nfmt(rows.length) + " baris");
+        },
+        complete: () => resolve(rows),
+        error: (err) => reject(err) });
+    } else {
+      const reader = new FileReader();
+      reader.onprogress = (e) => { if (e.lengthComputable) progressSet((e.loaded / e.total) * 40, "Membaca file Excel..."); };
+      reader.onerror = () => reject(new Error("File tidak bisa dibaca"));
+      reader.onload = async (e) => {
+        try {
+          progressSet(45, "Mengurai file Excel..."); await tick();
+          const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: !!cellDates });
+          progressSet(70, "Mengambil data sheet..."); await tick();
+          const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+          progressSet(85, nfmt(rows.length) + " baris terbaca"); await tick();
+          resolve(rows);
+        } catch (err) { reject(err); }
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  });
+}
+async function readAndBuild(input, title, opts) {
   const file = input.files && input.files[0];
   if (!file) return;
-  state.ui.allocationFileName = file.name;
-  const ext = file.name.split(".").pop().toLowerCase();
-  if (ext === "csv") {
-    Papa.parse(file, { header: true, skipEmptyLines: true, complete: (results) => {
-      state.ui.allocationRows = buildAllocationRows(results.data);
-      render();
-    }});
-  } else {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      state.ui.allocationRows = buildAllocationRows(rows);
-      render();
-    };
-    reader.readAsArrayBuffer(file);
+  opts.onName(file.name);
+  progressStart(title, "Membaca file " + file.name + "...");
+  try {
+    const rows = await parseTableFile(file, opts.cellDates);
+    progressSet(90, "Memvalidasi " + nfmt(rows.length) + " baris..."); await tick();
+    opts.build(rows);
+    progressSet(100, "Selesai: " + nfmt(rows.length) + " baris terbaca"); await tick();
+  } catch (e) {
+    console.error("readAndBuild error:", e);
+    notify("Gagal membaca file: " + (e.message || e), "error");
+  } finally {
+    setTimeout(progressEnd, 350);
   }
+  render();
+}
+function handleAllocationFile(input) {
+  readAndBuild(input, "Membaca file allocation log", { cellDates: true, onName: n => { state.ui.allocationFileName = n; }, build: rows => { state.ui.allocationRows = buildAllocationRows(rows); } });
 }
 function onAllocationGudangChange(v) {
   state.ui.allocationGudang = v;
@@ -1174,57 +1264,53 @@ async function applyAllocationImport() {
   if (!gudangId) return notify("Pilih gudang asal dulu", "error");
   if (!rows.length) return notify("Tidak ada baris valid untuk diproses", "error");
 
-  notify("Menerapkan " + rows.length + " baris, mohon tunggu...", "warning");
+  // Hitung stok gudang akhir per produk (bisa berkurang dari beberapa baris untuk produk yang sama)
+  const stockDelta = {};
+  rows.forEach(r => {
+    if (stockDelta[r.productId] === undefined) stockDelta[r.productId] = state.data.stock[gudangId]?.[r.productId] || 0;
+    stockDelta[r.productId] -= r.qty;
+  });
+  const stockPayload = Object.entries(stockDelta).map(([productId, quantity]) => ({ warehouse_id: gudangId, product_id: productId, quantity }));
+  // Gabungkan per (sales, produk) supaya tidak ada pasangan dobel dalam satu batch upsert
+  const salesDelta = {};
+  rows.forEach(r => {
+    const key = r.salesId + "||" + r.productId;
+    if (salesDelta[key] === undefined) salesDelta[key] = { salesId: r.salesId, productId: r.productId, qty: state.data.salesStock[r.salesId]?.[r.productId] || 0 };
+    salesDelta[key].qty += r.qty;
+  });
+  const salesPayload = Object.values(salesDelta).map(g => ({ sales_id: g.salesId, product_id: g.productId, qty: g.qty }));
+  const txPayload = rows.map(r => ({
+    id: uid('trx'), type: 'distribusi', date: txDateISO(r.tanggal),
+    from_location: gudangId, to_location: r.salesId, product_id: r.productId, qty: r.qty,
+    note: 'Input Allocation Log'
+  }));
 
+  const pg = makeProgress("Memproses allocation log", stockPayload.length + salesPayload.length + txPayload.length);
   try {
-    // Hitung stok gudang akhir per produk (bisa berkurang dari beberapa
-    // baris berbeda untuk produk yang sama), lalu kirim sebagai satu batch.
-    const stockDelta = {};
-    rows.forEach(r => {
-      if (stockDelta[r.productId] === undefined) stockDelta[r.productId] = state.data.stock[gudangId]?.[r.productId] || 0;
-      stockDelta[r.productId] -= r.qty;
+    await pgChunks(pg, stockPayload, 200, "Memperbarui stok gudang", async (part) => {
+      const { data, error } = await sb.from('warehouse_stock').upsert(part, { onConflict: 'warehouse_id,product_id' }).select();
+      if (error) throw error;
+      if (!data || data.length !== part.length) throw new Error("Stok gudang hanya " + (data?data.length:0) + "/" + part.length + " baris tersimpan (kemungkinan diblokir izin akses Supabase)");
     });
-    const stockPayload = Object.entries(stockDelta).map(([productId, quantity]) => ({
-      warehouse_id: gudangId, product_id: productId, quantity
-    }));
-    const { data: stockData, error: stockError } = await sb.from('warehouse_stock')
-      .upsert(stockPayload, { onConflict: 'warehouse_id,product_id' }).select();
-    if (stockError) throw stockError;
-    if (!stockData || stockData.length !== stockPayload.length)
-      throw new Error("Stok gudang hanya " + (stockData?stockData.length:0) + "/" + stockPayload.length + " baris tersimpan (kemungkinan diblokir izin akses Supabase)");
-
-    // Rows kini bisa unik per (sales, produk, tanggal), jadi gabungkan dulu
-    // per (sales, produk) sebelum kirim upsert stok sales — supaya tidak ada
-    // pasangan sales_id+product_id dobel dalam satu batch upsert.
-    const salesDelta = {};
-    rows.forEach(r => {
-      const key = r.salesId + "||" + r.productId;
-      if (salesDelta[key] === undefined) salesDelta[key] = { salesId: r.salesId, productId: r.productId, qty: state.data.salesStock[r.salesId]?.[r.productId] || 0 };
-      salesDelta[key].qty += r.qty;
+    await pgChunks(pg, salesPayload, 200, "Memperbarui stok team", async (part) => {
+      const { data, error } = await sb.from('sales_stock').upsert(part, { onConflict: 'sales_id,product_id' }).select();
+      if (error) throw error;
+      if (!data || data.length !== part.length) throw new Error("Stok sales hanya " + (data?data.length:0) + "/" + part.length + " baris tersimpan (kemungkinan diblokir izin akses Supabase)");
     });
-    const salesPayload = Object.values(salesDelta).map(g => ({
-      sales_id: g.salesId, product_id: g.productId, qty: g.qty
-    }));
-    const { data: salesData, error: salesError } = await sb.from('sales_stock')
-      .upsert(salesPayload, { onConflict: 'sales_id,product_id' }).select();
-    if (salesError) throw salesError;
-    if (!salesData || salesData.length !== salesPayload.length)
-      throw new Error("Stok sales hanya " + (salesData?salesData.length:0) + "/" + salesPayload.length + " baris tersimpan (kemungkinan diblokir izin akses Supabase)");
-
-    const txPayload = rows.map(r => ({
-      id: uid('trx'), type: 'distribusi', date: txDateISO(r.tanggal),
-      from_location: gudangId, to_location: r.salesId, product_id: r.productId, qty: r.qty,
-      note: 'Input Allocation Log'
-    }));
-    const { error: txError } = await sb.from('transactions').insert(txPayload);
-    if (txError) throw txError;
+    await pgChunks(pg, txPayload, 500, "Mencatat transaksi", async (part) => {
+      const { error } = await sb.from('transactions').insert(part);
+      if (error) throw error;
+    });
 
     state.ui.allocationRows = [];
     state.ui.allocationFileName = "";
+    await pg.reloading();
     await loadData();
     render();
+    await pg.end();
     notify(rows.length + " baris berhasil didistribusikan");
   } catch (e) {
+    pg.fail();
     console.error('applyAllocationImport error:', e);
     notify("Gagal proses allocation log: " + (e.message || e), "error");
   }
@@ -1497,36 +1583,39 @@ async function applySalesUpload() {
   const rows = state.ui.uploadRows.filter(r => r.status === "ok");
   if (rows.length === 0) return;
 
-  try {
-    for (const r of rows) {
-      // 1. Insert transaction
-      const { error: txError } = await sb.from('transactions').insert({
-        id: uid('trx'),
-        type: 'penjualan',
-        date: txDateISO(r.tanggal),
-        from_location: r.salesId,
-        product_id: r.productId,
-        qty: r.qty,
-        note: "Upload data penjualan"
-      });
-      if (txError) throw txError;
+  // Stok sales dihitung kumulatif per (sales, produk) supaya baris ganda tidak saling menimpa
+  const byKey = {};
+  rows.forEach(r => {
+    const key = r.salesId + "||" + r.productId;
+    if (!byKey[key]) byKey[key] = { salesId: r.salesId, productId: r.productId, qty: state.data.salesStock[r.salesId]?.[r.productId] || 0 };
+    byKey[key].qty -= r.qty;
+  });
+  const stockPayload = Object.values(byKey).map(g => ({ sales_id: g.salesId, product_id: g.productId, qty: g.qty }));
+  const txPayload = rows.map(r => ({
+    id: uid('trx'), type: 'penjualan', date: txDateISO(r.tanggal),
+    from_location: r.salesId, product_id: r.productId, qty: r.qty, note: "Upload data penjualan"
+  }));
 
-      // 2. Decrease sales stock
-      const currentQty = state.data.salesStock[r.salesId]?.[r.productId] || 0;
-      const { error: stockError } = await sb.from('sales_stock').upsert({
-        sales_id: r.salesId,
-        product_id: r.productId,
-        qty: currentQty - r.qty
-      }, { onConflict: 'sales_id,product_id' });
-      if (stockError) throw stockError;
-    }
+  const pg = makeProgress("Memproses data penjualan", txPayload.length + stockPayload.length);
+  try {
+    await pgChunks(pg, txPayload, 500, "Mencatat transaksi penjualan", async (part) => {
+      const { error } = await sb.from('transactions').insert(part);
+      if (error) throw error;
+    });
+    await pgChunks(pg, stockPayload, 200, "Mengurangi stok team", async (part) => {
+      const { error } = await sb.from('sales_stock').upsert(part, { onConflict: 'sales_id,product_id' });
+      if (error) throw error;
+    });
 
     state.ui.uploadRows = [];
     state.ui.uploadFileName = "";
+    await pg.reloading();
     await loadData();
     render();
+    await pg.end();
     notify(rows.length + " baris penjualan berhasil diproses");
   } catch (e) {
+    pg.fail();
     console.error('applySalesUpload error:', e);
     notify("Gagal upload: " + (e.message || e), "error");
   }
@@ -1540,9 +1629,10 @@ async function applyCatalogImport() {
   const btnOriginalText = btn ? btn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = "Memproses " + rows.length + " produk, mohon tunggu..."; }
 
+  progressStart("Import katalog barang", "Memeriksa produk yang sudah ada...");
+  let pg = null;
   try {
-    // Cek langsung ke database (bukan cache lokal) supaya akurat meski
-    // produk itu baru saja ditambahkan lewat cluster/sesi lain.
+    // Cek langsung ke database (bukan cache lokal) supaya akurat meski produk baru saja ditambahkan lewat sesi lain.
     const freshProducts = await fetchAllRows('products', { columns: 'id' });
     const existingIds = new Set((freshProducts || []).map(p => p.id));
 
@@ -1550,10 +1640,7 @@ async function applyCatalogImport() {
     const added = newRows.length;
     const updated = rows.length - added;
 
-    // 1. Simpan semua produk (baru + update) dalam SATU batch upsert,
-    //    bukan satu-satu - jauh lebih cepat untuk ratusan baris.
-    // harga_program hanya ikut dikirim kalau kolomnya ada di file, supaya
-    // import lama (tanpa kolom itu) tidak menimpa harga program yang sudah tersimpan.
+    // harga_program hanya ikut dikirim kalau kolomnya ada di file, supaya import lama tidak menimpa harga program tersimpan.
     const productPayload = rows.map(r => {
       const o = {
         id: r.id, name: r.name, category: r.category, brand: r.brand,
@@ -1563,58 +1650,47 @@ async function applyCatalogImport() {
       if (r.hasProgramCol) o.harga_program = r.hargaProgram;
       return o;
     });
-    for (let i = 0; i < productPayload.length; i += 200) {
-      const { error: prodErr } = await sb.from('products')
-        .upsert(productPayload.slice(i, i + 200), { onConflict: 'id' });
-      if (prodErr) throw prodErr;
-    }
-
-    // 2. Inisialisasi stok awal (qty 0) HANYA untuk produk yang baru,
-    //    dikirim sebagai batch besar juga - bukan per gudang/per sales.
+    // Stok awal (qty 0) hanya untuk produk baru
+    const wsPayload = [], ssPayload = [];
     if (newRows.length) {
-      const wsPayload = [];
-      for (const w of state.data.warehouses) {
-        for (const r of newRows) wsPayload.push({ warehouse_id: w.id, product_id: r.id, quantity: 0 });
-      }
-      for (let i = 0; i < wsPayload.length; i += 500) {
-        const { error: wsError } = await sb.from('warehouse_stock')
-          .upsert(wsPayload.slice(i, i + 500), { onConflict: 'warehouse_id,product_id', ignoreDuplicates: true });
-        if (wsError) throw wsError;
-      }
-
-      const ssPayload = [];
-      for (const s of state.data.salesTeam) {
-        for (const r of newRows) ssPayload.push({ sales_id: s.id, product_id: r.id, qty: 0 });
-      }
-      for (let i = 0; i < ssPayload.length; i += 500) {
-        const { error: ssError } = await sb.from('sales_stock')
-          .upsert(ssPayload.slice(i, i + 500), { onConflict: 'sales_id,product_id', ignoreDuplicates: true });
-        if (ssError) throw ssError;
-      }
+      for (const w of state.data.warehouses) for (const r of newRows) wsPayload.push({ warehouse_id: w.id, product_id: r.id, quantity: 0 });
+      for (const sl of state.data.salesTeam) for (const r of newRows) ssPayload.push({ sales_id: sl.id, product_id: r.id, qty: 0 });
     }
 
-    // Update warehouse name if cluster changed (hanya untuk admin pusat yang
-    // memang terikat ke satu gudang pusat spesifik - HQ dilewati karena
-    // tidak ada satu gudang pusat tunggal yang jadi acuan)
+    pg = makeProgress("Import katalog barang", productPayload.length + wsPayload.length + ssPayload.length);
+    await pgChunks(pg, productPayload, 200, "Menyimpan produk", async (part) => {
+      const { error } = await sb.from('products').upsert(part, { onConflict: 'id' });
+      if (error) throw error;
+    });
+    await pgChunks(pg, wsPayload, 500, "Menyiapkan stok gudang (0)", async (part) => {
+      const { error } = await sb.from('warehouse_stock').upsert(part, { onConflict: 'warehouse_id,product_id', ignoreDuplicates: true });
+      if (error) throw error;
+    });
+    await pgChunks(pg, ssPayload, 500, "Menyiapkan stok team (0)", async (part) => {
+      const { error } = await sb.from('sales_stock').upsert(part, { onConflict: 'sales_id,product_id', ignoreDuplicates: true });
+      if (error) throw error;
+    });
+
+    // Update nama gudang kalau cluster berubah (khusus admin pusat yang terikat ke satu gudang pusat)
     const importedCluster = (rows.find(r => r.cluster) || {}).cluster;
     if (importedCluster && isPusatAdmin() && myGudangPusatId()) {
       const pusat = state.data.warehouses.find(w => w.id === myGudangPusatId());
       const newName = "Gudang Pusat - " + importedCluster;
       if (pusat && pusat.name !== newName) {
-        const { error: whUpdError } = await sb.from('warehouses').update({
-          name: newName,
-          kota: importedCluster
-        }).eq('id', myGudangPusatId());
+        const { error: whUpdError } = await sb.from('warehouses').update({ name: newName, kota: importedCluster }).eq('id', myGudangPusatId());
         if (whUpdError) throw whUpdError;
       }
     }
 
     state.ui.catalogRows = [];
     state.ui.catalogFileName = "";
+    await pg.reloading();
     await loadData();
     render();
+    await pg.end();
     notify(added + " produk baru ditambahkan, " + updated + " produk diperbarui");
   } catch (e) {
+    if (pg) pg.fail(); else progressEnd();
     console.error('applyCatalogImport error:', e);
     notify("Gagal import: " + (e.message || e), "error");
     const btnRetry = document.getElementById('btn-terapkan-katalog');
@@ -1814,58 +1890,44 @@ function buildStockImportRows(dataRows) {
   });
 }
 function handleStockImportFile(input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
-  state.ui.stockImportFileName = file.name;
-  const ext = file.name.split(".").pop().toLowerCase();
-  if (ext === "csv") {
-    Papa.parse(file, { header: true, skipEmptyLines: true, complete: (results) => {
-      state.ui.stockImportRows = buildStockImportRows(results.data);
-      render();
-    }});
-  } else {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      state.ui.stockImportRows = buildStockImportRows(rows);
-      render();
-    };
-    reader.readAsArrayBuffer(file);
-  }
+  readAndBuild(input, "Membaca file stok awal", { onName: n => { state.ui.stockImportFileName = n; }, build: rows => { state.ui.stockImportRows = buildStockImportRows(rows); } });
 }
 async function applyStockImport() {
   const rows = state.ui.stockImportRows.filter(r => r.status === "ok");
   if (rows.length === 0) return;
 
-  notify("Menerapkan " + rows.length + " baris, mohon tunggu...", "warning");
+  // Dedupe per gudang+produk (ambil baris terakhir) supaya satu batch upsert tidak menyentuh key yang sama dua kali
+  const dedup = {};
+  rows.forEach(r => { dedup[r.warehouseId + "||" + r.productId] = r; });
+  const uniqueRows = Object.values(dedup);
+  const stockPayload = uniqueRows.map(r => ({ warehouse_id: r.warehouseId, product_id: r.productId, quantity: r.qty }));
+  const now = new Date().toISOString();
+  const txPayload = uniqueRows.map(r => ({
+    id: uid('trx'), type: 'stok_awal', date: now,
+    to_location: r.warehouseId, product_id: r.productId, qty: r.qty,
+    note: "Update stok awal via import (" + r.warehouseName + ")"
+  }));
 
+  const pg = makeProgress("Menerapkan stok awal gudang", stockPayload.length + txPayload.length);
   try {
-    // Dedupe by warehouse+product (keep the last occurrence) so a single
-    // bulk upsert never targets the same conflict key twice in one call.
-    const dedup = {};
-    rows.forEach(r => { dedup[r.warehouseId + "||" + r.productId] = r; });
-    const uniqueRows = Object.values(dedup);
-
-    const stockPayload = uniqueRows.map(r => ({ warehouse_id: r.warehouseId, product_id: r.productId, quantity: r.qty }));
-    const { error: stockError } = await sb.from('warehouse_stock').upsert(stockPayload, { onConflict: 'warehouse_id,product_id' });
-    if (stockError) throw stockError;
-
-    const txPayload = uniqueRows.map(r => ({
-      id: uid('trx'), type: 'stok_awal', date: new Date().toISOString(),
-      to_location: r.warehouseId, product_id: r.productId, qty: r.qty,
-      note: "Update stok awal via import (" + r.warehouseName + ")"
-    }));
-    const { error: txError } = await sb.from('transactions').insert(txPayload);
-    if (txError) throw txError;
+    await pgChunks(pg, stockPayload, 500, "Menyimpan stok gudang", async (part) => {
+      const { error } = await sb.from('warehouse_stock').upsert(part, { onConflict: 'warehouse_id,product_id' });
+      if (error) throw error;
+    });
+    await pgChunks(pg, txPayload, 500, "Mencatat transaksi", async (part) => {
+      const { error } = await sb.from('transactions').insert(part);
+      if (error) throw error;
+    });
 
     state.ui.stockImportRows = [];
     state.ui.stockImportFileName = "";
+    await pg.reloading();
     await loadData();
     render();
+    await pg.end();
     notify(uniqueRows.length + " baris stok awal berhasil diterapkan");
   } catch (e) {
+    pg.fail();
     console.error('applyStockImport error:', e);
     notify("Gagal import stok: " + (e.message || e), "error");
   }
@@ -1949,73 +2011,48 @@ function buildSalesImportRows(dataRows) {
   });
 }
 function handleSalesImportFile(input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
-  state.ui.salesImportFileName = file.name;
-  const ext = file.name.split(".").pop().toLowerCase();
-  if (ext === "csv") {
-    Papa.parse(file, { header: true, skipEmptyLines: true, complete: (results) => {
-      state.ui.salesImportRows = buildSalesImportRows(results.data);
-      render();
-    }});
-  } else {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      state.ui.salesImportRows = buildSalesImportRows(rows);
-      render();
-    };
-    reader.readAsArrayBuffer(file);
-  }
+  readAndBuild(input, "Membaca file daftar sales", { onName: n => { state.ui.salesImportFileName = n; }, build: rows => { state.ui.salesImportRows = buildSalesImportRows(rows); } });
 }
 async function applySalesImport() {
   const rows = state.ui.salesImportRows.filter(r => r.status === "new" || r.status === "update");
   if (rows.length === 0) return;
 
-  notify("Menerapkan " + rows.length + " baris, mohon tunggu...", "warning");
+  const newRows = rows.filter(r => !state.data.salesTeam.find(s => s.id.toLowerCase() === r.id.toLowerCase()));
+  const updateRows = rows.filter(r => state.data.salesTeam.find(s => s.id.toLowerCase() === r.id.toLowerCase()));
+  const newSalesPayload = newRows.map(r => ({ id: r.id, name: r.name, gudang: r.gudang, supervisor: r.supervisor, posisi: r.posisi || null }));
+  // Stok awal (qty 0) untuk setiap sales baru x setiap produk
+  const stockPayload = [];
+  newRows.forEach(r => { state.data.products.forEach(p => stockPayload.push({ sales_id: r.id, product_id: p.id, qty: 0 })); });
 
+  const pg = makeProgress("Import daftar sales", updateRows.length + newSalesPayload.length + stockPayload.length);
   try {
-    const newRows = rows.filter(r => !state.data.salesTeam.find(s => s.id.toLowerCase() === r.id.toLowerCase()));
-    const updateRows = rows.filter(r => state.data.salesTeam.find(s => s.id.toLowerCase() === r.id.toLowerCase()));
-
-    // Bulk-update existing sales (still one request per row, but run
-    // concurrently instead of waiting for each one before starting the next)
-    if (updateRows.length) {
-      const results = await Promise.all(updateRows.map(r =>
+    // Update sales yang sudah ada: per baris, tapi dijalankan paralel per kelompok kecil
+    await pgChunks(pg, updateRows, 20, "Memperbarui sales", async (part) => {
+      const results = await Promise.all(part.map(r =>
         sb.from('sales_team').update(Object.assign({ name: r.name, gudang: r.gudang, supervisor: r.supervisor }, r.posisi ? { posisi: r.posisi } : {})).eq('id', r.id)
       ));
       const firstError = results.find(res => res.error);
       if (firstError) throw firstError.error;
-    }
-
-    // Bulk-insert all new sales in a single request
-    if (newRows.length) {
-      const { error: insError } = await sb.from('sales_team').insert(
-        newRows.map(r => ({ id: r.id, name: r.name, gudang: r.gudang, supervisor: r.supervisor, posisi: r.posisi || null }))
-      );
-      if (insError) throw insError;
-
-      // Bulk-insert the initial (qty=0) sales_stock rows for every new
-      // sales x every product, in one request instead of one per row
-      const stockPayload = [];
-      newRows.forEach(r => {
-        state.data.products.forEach(p => stockPayload.push({ sales_id: r.id, product_id: p.id, qty: 0 }));
-      });
-      if (stockPayload.length) {
-        const { error: ssError } = await sb.from('sales_stock').insert(stockPayload);
-        if (ssError) throw ssError;
-      }
-    }
+    });
+    await pgChunks(pg, newSalesPayload, 500, "Menambahkan sales baru", async (part) => {
+      const { error } = await sb.from('sales_team').insert(part);
+      if (error) throw error;
+    });
+    await pgChunks(pg, stockPayload, 1000, "Menyiapkan stok team (0)", async (part) => {
+      const { error } = await sb.from('sales_stock').insert(part);
+      if (error) throw error;
+    });
 
     state.ui.salesImportRows = [];
     state.ui.salesImportFileName = "";
     if (rows.length && !state.ui.salesSelectedStok) state.ui.salesSelectedStok = rows[0].id;
+    await pg.reloading();
     await loadData();
     render();
+    await pg.end();
     notify(newRows.length + " sales baru ditambahkan, " + updateRows.length + " sales diperbarui");
   } catch (e) {
+    pg.fail();
     console.error('applySalesImport error:', e);
     notify("Gagal import sales: " + (e.message || e), "error");
   }
@@ -2879,22 +2916,7 @@ function buildStokAwalRows(dataRows) {
   return out;
 }
 function handleStokAwalFile(input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
-  state.ui.stokAwalFileName = file.name;
-  const ext = file.name.split(".").pop().toLowerCase();
-  if (ext === "csv") {
-    Papa.parse(file, { header: true, skipEmptyLines: true, complete: (results) => { state.ui.stokAwalRows = buildStokAwalRows(results.data); render(); } });
-  } else {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
-      state.ui.stokAwalRows = buildStokAwalRows(rows);
-      render();
-    };
-    reader.readAsArrayBuffer(file);
-  }
+  readAndBuild(input, "Membaca file stok awal team", { onName: n => { state.ui.stokAwalFileName = n; }, build: rows => { state.ui.stokAwalRows = buildStokAwalRows(rows); } });
 }
 async function applyStokAwalRows(rows, label) {
   if (!canInputStokAwal()) return notify("Hanya HQ dan admin gudang pusat yang bisa input stok awal", "error");
@@ -2902,28 +2924,33 @@ async function applyStokAwalRows(rows, label) {
   stokAwalBaseTeam().forEach(t => { allowedIds[t.id] = true; });
   const valid = rows.filter(r => r.status === "ok" && allowedIds[r.salesId]);
   if (!valid.length) return;
-  notify("Menyimpan " + valid.length + " baris stok awal team, mohon tunggu...", "warning");
+
+  const dedup = {};
+  valid.forEach(r => { dedup[r.salesId + "||" + r.productId] = r; });
+  const unique = Object.values(dedup);
+  const stockPayload = unique.map(r => ({ sales_id: r.salesId, product_id: r.productId, qty: r.qty }));
+  const now = new Date().toISOString();
+  const txPayload = unique.map(r => ({ id: uid('trx'), type: 'stok_awal', date: now, to_location: r.salesId, product_id: r.productId, qty: r.qty, note: "Input stok awal team " + label + " (" + r.salesName + ")" }));
+
+  const pg = makeProgress("Menyimpan stok awal team", stockPayload.length + txPayload.length);
   try {
-    const dedup = {};
-    valid.forEach(r => { dedup[r.salesId + "||" + r.productId] = r; });
-    const unique = Object.values(dedup);
-    const stockPayload = unique.map(r => ({ sales_id: r.salesId, product_id: r.productId, qty: r.qty }));
-    for (let i = 0; i < stockPayload.length; i += 500) {
-      const { error } = await sb.from('sales_stock').upsert(stockPayload.slice(i, i + 500), { onConflict: 'sales_id,product_id' });
+    await pgChunks(pg, stockPayload, 500, "Menyimpan stok team", async (part) => {
+      const { error } = await sb.from('sales_stock').upsert(part, { onConflict: 'sales_id,product_id' });
       if (error) throw error;
-    }
-    const now = new Date().toISOString();
-    const txPayload = unique.map(r => ({ id: uid('trx'), type: 'stok_awal', date: now, to_location: r.salesId, product_id: r.productId, qty: r.qty, note: "Input stok awal team " + label + " (" + r.salesName + ")" }));
-    for (let i = 0; i < txPayload.length; i += 500) {
-      const { error } = await sb.from('transactions').insert(txPayload.slice(i, i + 500));
+    });
+    await pgChunks(pg, txPayload, 500, "Mencatat transaksi", async (part) => {
+      const { error } = await sb.from('transactions').insert(part);
       if (error) throw error;
-    }
+    });
     state.ui.stokAwalRows = [];
     state.ui.stokAwalFileName = "";
+    await pg.reloading();
     await loadData();
     render();
+    await pg.end();
     notify(unique.length + " baris stok awal team berhasil disimpan");
   } catch (e) {
+    pg.fail();
     console.error('applyStokAwalRows error:', e);
     notify("Gagal menyimpan stok awal team: " + (e.message || e), "error");
   }
@@ -3240,26 +3267,7 @@ function buildSalesUploadRows(dataRows) {
 }
 
 function handleUploadFile(input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
-  state.ui.uploadFileName = file.name;
-  const ext = file.name.split(".").pop().toLowerCase();
-  if (ext === "csv") {
-    Papa.parse(file, { header: true, skipEmptyLines: true, complete: (results) => {
-      state.ui.uploadRows = buildSalesUploadRows(results.data);
-      render();
-    }});
-  } else {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      state.ui.uploadRows = buildSalesUploadRows(rows);
-      render();
-    };
-    reader.readAsArrayBuffer(file);
-  }
+  readAndBuild(input, "Membaca file data penjualan", { cellDates: true, onName: n => { state.ui.uploadFileName = n; }, build: rows => { state.ui.uploadRows = buildSalesUploadRows(rows); } });
 }
 function renderUploadPenjualan() {
   const rows = state.ui.uploadRows;
@@ -3344,26 +3352,7 @@ function buildCatalogRows(dataRows) {
   });
 }
 function handleCatalogFile(input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
-  state.ui.catalogFileName = file.name;
-  const ext = file.name.split(".").pop().toLowerCase();
-  if (ext === "csv") {
-    Papa.parse(file, { header: true, skipEmptyLines: true, complete: (results) => {
-      state.ui.catalogRows = buildCatalogRows(results.data);
-      render();
-    }});
-  } else {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      state.ui.catalogRows = buildCatalogRows(rows);
-      render();
-    };
-    reader.readAsArrayBuffer(file);
-  }
+  readAndBuild(input, "Membaca file katalog barang", { onName: n => { state.ui.catalogFileName = n; }, build: rows => { state.ui.catalogRows = buildCatalogRows(rows); } });
 }
 function onCatalogSearch(v) { state.ui.catalogSearch = v; render(); }
 function onCatalogBrandFilter(v) { state.ui.catalogBrandFilter = v; render(); }
