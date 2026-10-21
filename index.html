@@ -730,7 +730,7 @@ const state = {
     allocationRows: [], allocationFileName: "", allocationGudang: "",
     period: "all", periodFrom: "", periodTo: "",
     stockStatusFilter: "all", salesStockStatusFilter: "all", stockBrandFilter: "",
-    distPosisiFilter: "", stokPosisiFilter: "", catalogEdit: null,
+    distPosisiFilter: "", stokPosisiFilter: "", catalogEdit: null, stokAwalRows: [], stokAwalFileName: "", saGudang: "", saPosisi: "",
     profileMenuOpen: false, pwError: "", pwSuccess: "", sidebarCollapsed: false,
     loginError: "", userForm: false },
 };
@@ -2813,6 +2813,174 @@ function posisiFilterSelect(current, handler) {
 }
 function onDistPosisiFilter(v) { state.ui.distPosisiFilter = v; render(); }
 function onStokPosisiFilter(v) { state.ui.stokPosisiFilter = v; render(); }
+// ---------------- Input stok awal TEAM SALES (menu di Distribusi ke Team) ----------------
+// Hanya HQ & Admin Gudang Pusat. HQ = semua team nasional. Admin pusat = team di gudang pusat & gudang cabang cluster-nya.
+// Angka yang diisi MENIMPA stok team saat ini, dicatat sebagai transaksi "stok_awal". (Stok awal gudang ada di menu Gudang Pusat.)
+function canInputStokAwal() { return isHQ() || isPusatAdmin(); }
+function stokAwalBaseTeam() { return isHQ() ? state.data.salesTeam : (isPusatAdmin() ? mySalesTeam() : []); }
+function stokAwalTeam() {
+  let t = stokAwalBaseTeam();
+  if (state.ui.saGudang) t = t.filter(x => x.gudang === state.ui.saGudang);
+  if (state.ui.saPosisi) t = t.filter(x => x.posisi === state.ui.saPosisi);
+  return t;
+}
+function onSaGudangFilter(v) { state.ui.saGudang = v; render(); }
+function onSaPosisiFilter(v) { state.ui.saPosisi = v; render(); }
+function stokAwalProductOk(prod, sales) {
+  // Admin pusat hanya boleh produk milik cluster team tsb; HQ bebas.
+  if (isHQ()) return true;
+  const cl = locationCluster(sales.id);
+  return !prod.cluster || !cl || prod.cluster === cl;
+}
+function renderStokAwalAvail() {
+  const el = document.getElementById("sa-avail");
+  if (!el) return;
+  const sid = (document.getElementById("sa-sales")||{}).value;
+  const pid = (document.getElementById("sa-produk")||{}).value;
+  if (!sid || !pid) { el.textContent = ""; return; }
+  el.textContent = "Stok saat ini di team ini: " + nfmt((state.data.salesStock[sid]||{})[pid] || 0);
+}
+function downloadStokAwalTemplate() {
+  if (!canInputStokAwal()) return;
+  const team = stokAwalTeam();
+  if (!team.length) return notify("Tidak ada team pada filter ini", "error");
+  const rows = [];
+  team.forEach(t => {
+    const cl = locationCluster(t.id);
+    state.data.products.filter(p => !p.cluster || !cl || p.cluster === cl).forEach(p => rows.push([t.id, t.name, p.id, p.name, ""]));
+  });
+  if (rows.length > 30000) return notify("Terlalu banyak baris (" + nfmt(rows.length) + "). Persempit dulu dengan filter Gudang / Posisi.", "error");
+  downloadCSV("template_stok_awal_team.csv", ["ID Sales", "Nama Sales", "Product ID", "Product Name", "Stok Awal"], rows);
+  notify("Template untuk " + team.length + " team diunduh. Isi kolom Stok Awal (baris kosong dilewati), lalu upload kembali.");
+}
+function buildStokAwalRows(dataRows) {
+  const allowedIds = {};
+  stokAwalBaseTeam().forEach(t => { allowedIds[t.id.toLowerCase()] = t; });
+  const out = [];
+  dataRows.forEach((r, i) => {
+    const qtyRaw = String(pickField(r, ["Stok Awal","stok","qty","jumlah"])).trim();
+    if (qtyRaw === "") return; // baris tanpa stok awal dilewati
+    const salesIdRaw = pickField(r, ["ID Sales","id sales","sales id","canvasser id","id"]).toString().trim();
+    const productId = pickField(r, ["Product ID","sku","kode"]).toString().trim();
+    const qty = parseInt(qtyRaw.replace(/[^0-9-]/g,""), 10);
+    const prod = state.data.products.find(p => p.id === productId);
+    const known = state.data.salesTeam.find(t => t.id.toLowerCase() === salesIdRaw.toLowerCase());
+    const sales = allowedIds[salesIdRaw.toLowerCase()] || null;
+    let status = "ok", issue = "";
+    if (!salesIdRaw) { status = "error"; issue = "ID Sales kosong"; }
+    else if (!known) { status = "error"; issue = "ID Sales tidak ditemukan"; }
+    else if (!sales) { status = "error"; issue = "Team di luar akses Anda"; }
+    else if (!prod) { status = "error"; issue = "Produk tidak ditemukan"; }
+    else if (!stokAwalProductOk(prod, sales)) { status = "error"; issue = "Produk bukan milik cluster team ini"; }
+    else if (isNaN(qty) || qty < 0) { status = "error"; issue = "Stok awal harus angka 0 atau lebih"; }
+    const gName = known ? ((state.data.warehouses.find(w => w.id === known.gudang)||{}).name || "-") : "-";
+    out.push({ key: i, salesId: known ? known.id : salesIdRaw, salesName: known ? known.name : salesIdRaw, gudangName: gName, productId, productName: prod ? prod.name : productId, qty: isNaN(qty) ? 0 : qty, current: known ? ((state.data.salesStock[known.id]||{})[productId] || 0) : 0, status, issue });
+  });
+  return out;
+}
+function handleStokAwalFile(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  state.ui.stokAwalFileName = file.name;
+  const ext = file.name.split(".").pop().toLowerCase();
+  if (ext === "csv") {
+    Papa.parse(file, { header: true, skipEmptyLines: true, complete: (results) => { state.ui.stokAwalRows = buildStokAwalRows(results.data); render(); } });
+  } else {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+      state.ui.stokAwalRows = buildStokAwalRows(rows);
+      render();
+    };
+    reader.readAsArrayBuffer(file);
+  }
+}
+async function applyStokAwalRows(rows, label) {
+  if (!canInputStokAwal()) return notify("Hanya HQ dan admin gudang pusat yang bisa input stok awal", "error");
+  const allowedIds = {};
+  stokAwalBaseTeam().forEach(t => { allowedIds[t.id] = true; });
+  const valid = rows.filter(r => r.status === "ok" && allowedIds[r.salesId]);
+  if (!valid.length) return;
+  notify("Menyimpan " + valid.length + " baris stok awal team, mohon tunggu...", "warning");
+  try {
+    const dedup = {};
+    valid.forEach(r => { dedup[r.salesId + "||" + r.productId] = r; });
+    const unique = Object.values(dedup);
+    const stockPayload = unique.map(r => ({ sales_id: r.salesId, product_id: r.productId, qty: r.qty }));
+    for (let i = 0; i < stockPayload.length; i += 500) {
+      const { error } = await sb.from('sales_stock').upsert(stockPayload.slice(i, i + 500), { onConflict: 'sales_id,product_id' });
+      if (error) throw error;
+    }
+    const now = new Date().toISOString();
+    const txPayload = unique.map(r => ({ id: uid('trx'), type: 'stok_awal', date: now, to_location: r.salesId, product_id: r.productId, qty: r.qty, note: "Input stok awal team " + label + " (" + r.salesName + ")" }));
+    for (let i = 0; i < txPayload.length; i += 500) {
+      const { error } = await sb.from('transactions').insert(txPayload.slice(i, i + 500));
+      if (error) throw error;
+    }
+    state.ui.stokAwalRows = [];
+    state.ui.stokAwalFileName = "";
+    await loadData();
+    render();
+    notify(unique.length + " baris stok awal team berhasil disimpan");
+  } catch (e) {
+    console.error('applyStokAwalRows error:', e);
+    notify("Gagal menyimpan stok awal team: " + (e.message || e), "error");
+  }
+}
+function applyStokAwalBulk() { applyStokAwalRows(state.ui.stokAwalRows, "via template"); }
+function onStokAwalSatuan() {
+  const sid = (document.getElementById("sa-sales")||{}).value || "";
+  const pid = (document.getElementById("sa-produk")||{}).value || "";
+  const qtyRaw = ((document.getElementById("sa-qty")||{}).value || "").toString().trim();
+  if (!sid || !pid || qtyRaw === "") return notify("Pilih team, produk, dan isi stok awal", "error");
+  const qty = parseInt(qtyRaw, 10);
+  if (isNaN(qty) || qty < 0) return notify("Stok awal harus angka 0 atau lebih", "error");
+  const sales = stokAwalBaseTeam().find(t => t.id === sid);
+  const prod = state.data.products.find(p => p.id === pid);
+  if (!sales) return notify("Team di luar akses Anda", "error");
+  if (!prod) return notify("Produk tidak ditemukan", "error");
+  if (!stokAwalProductOk(prod, sales)) return notify("Produk bukan milik cluster team ini", "error");
+  applyStokAwalRows([{ status: "ok", salesId: sales.id, salesName: sales.name, productId: pid, qty }], "satuan");
+}
+function renderStokAwalSection() {
+  const base = stokAwalBaseTeam();
+  const team = stokAwalTeam();
+  const rows = state.ui.stokAwalRows;
+  const okCount = rows.filter(r => r.status === "ok").length;
+  const errCount = rows.filter(r => r.status === "error").length;
+  const gudangIds = Array.from(new Set(base.map(t => t.gudang).filter(Boolean)));
+  const gudangOpts = gudangIds.map(id => state.data.warehouses.find(w => w.id === id)).filter(Boolean).sort((x,y)=>x.name.localeCompare(y.name));
+  return '<div class="section" style="margin-bottom:20px"><div class="section-head"><h3>Input Stok Awal Team</h3>' +
+      '<button class="btn btn-ghost" onclick="downloadStokAwalTemplate()">&#8681; Download template</button></div>' +
+    '<p class="muted" style="font-size:13px;color:#5d7a80">' + (isHQ() ? 'HQ dapat mengisi stok awal semua team di seluruh cluster nasional.' : 'Admin gudang pusat dapat mengisi stok awal semua team di gudang pusat dan gudang cabang di cluster Anda.') +
+      ' Angka yang diisi <b>menimpa</b> stok team saat ini. Stok awal gudang ada di menu Gudang Pusat. Filter Gudang/Posisi di bawah juga menentukan isi template.</p>' +
+    (base.length ? (
+      '<div class="row" style="align-items:flex-end;gap:12px">' +
+        '<label class="field" style="min-width:220px"><span>Gudang</span><select class="input" onchange="onSaGudangFilter(this.value)"><option value="">Semua gudang</option>' + gudangOpts.map(w=>'<option value="'+w.id+'"'+(w.id===state.ui.saGudang?" selected":"")+'>'+esc(w.name)+'</option>').join("") + '</select></label>' +
+        posisiFilterSelect(state.ui.saPosisi, "onSaPosisiFilter") +
+        '<span class="muted">' + nfmt(team.length) + ' team</span>' +
+      '</div>' +
+      '<div class="row" style="align-items:flex-end;gap:12px;margin-top:12px">' +
+        '<label class="field" style="min-width:260px"><span>Team</span><select class="input" id="sa-sales" onchange="renderStokAwalAvail()"><option value="">Pilih team</option>' + team.map(t=>'<option value="'+t.id+'">'+esc(t.name)+' ('+esc(t.id)+')'+(t.posisi?' - '+esc(t.posisi):'')+'</option>').join("") + '</select></label>' +
+        '<label class="field" style="min-width:260px"><span>Produk</span>' + productPickerHTML("sa-produk", renderStokAwalAvail) + '</label>' +
+        '<label class="field"><span>Stok awal</span><input class="input" type="number" min="0" id="sa-qty" placeholder="Jumlah unit"></label>' +
+        '<button class="btn btn-primary" onclick="onStokAwalSatuan()">&#10003; Simpan stok awal</button>' +
+      '</div>' +
+      '<div class="muted" id="sa-avail" style="margin-top:6px"></div>' +
+      '<hr style="border:none;border-top:1px solid var(--border);margin:14px 0">' +
+      '<div class="profile-menu-label" style="margin-bottom:8px">Input massal (template)</div>' +
+      '<div class="row"><input type="file" accept=".csv,.xlsx,.xls" onchange="handleStokAwalFile(this)">' + (state.ui.stokAwalFileName ? '<span class="muted">'+esc(state.ui.stokAwalFileName)+'</span>' : '') + '</div>' +
+      (rows.length ? (
+        '<div style="margin-top:14px"><div class="section-head"><h3 style="font-size:13px">Preview (' + okCount + '/' + rows.length + ' baris siap' + (errCount ? ', ' + errCount + ' bermasalah' : '') + ')</h3>' +
+          '<button class="btn btn-primary" ' + (okCount===0?"disabled":"") + ' onclick="applyStokAwalBulk()">&#10003; Terapkan ' + okCount + ' baris</button></div>' +
+          '<div class="tbl-scroll" style="max-height:340px"><table class="tbl"><thead><tr><th>Team</th><th>Gudang</th><th>Produk</th><th class="num">Stok saat ini</th><th class="num">Stok awal baru</th><th>Status</th></tr></thead><tbody>' +
+          rows.map(r => '<tr><td>'+esc(r.salesName)+' <span class="muted">('+esc(r.salesId)+')</span></td><td class="muted">'+esc(r.gudangName)+'</td><td>'+esc(r.productName)+' <span class="muted">('+esc(r.productId)+')</span></td><td class="num">'+nfmt(r.current)+'</td><td class="num">'+nfmt(r.qty)+'</td><td>' + (r.status==="ok" ? '<span class="badge badge-ok">Siap</span>' : '<span class="badge badge-err">'+esc(r.issue)+'</span>') + '</td></tr>').join("") +
+          '</tbody></table></div></div>'
+      ) : "")
+    ) : '<p class="muted">Belum ada team yang bisa Anda isi stok awalnya. Tambahkan dulu di menu Stok di Team.</p>') +
+  '</div>';
+}
 function renderDistribusi() {
   const salesListAll = mySalesTeam();
   const salesList = state.ui.distPosisiFilter ? salesListAll.filter(s=>s.posisi===state.ui.distPosisiFilter) : salesListAll;
@@ -2822,7 +2990,7 @@ function renderDistribusi() {
   const allocRows = state.ui.allocationRows;
   const allocOk = allocRows.filter(r=>r.status==="ok").length;
   const allocErr = allocRows.filter(r=>r.status==="error").length;
-  return '<div class="section"><div class="section-head"><h3>Input Allocation Log</h3>' +
+  return (canInputStokAwal() ? renderStokAwalSection() : '') + '<div class="section"><div class="section-head"><h3>Input Allocation Log</h3>' +
       '<button class="btn btn-ghost" onclick="downloadAllocationTemplate()">&#8681; Download template</button>' +
     '</div>' +
     '<p class="muted" style="font-size:13px;color:#5d7a80">Upload file allocation log (<code class="inline">.xlsx</code> atau <code class="inline">.csv</code>) untuk distribusi massal ke banyak sales sekaligus — download template di atas (format .xlsx). Kolom <code class="inline">Canvasser ID</code> dipakai sebagai sales tujuan, <code class="inline">Product ID</code> sebagai produk, <code class="inline">Total</code> sebagai jumlah, dan <code class="inline">Tanggal</code> sebagai tanggal transaksi (kosong = hari ini). Baris dengan Canvasser ID + Product ID + Tanggal yang sama otomatis dijumlahkan.</p>' +
