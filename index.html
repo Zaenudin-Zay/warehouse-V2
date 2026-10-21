@@ -740,7 +740,7 @@ const state = {
     allocationRows: [], allocationFileName: "", allocationGudang: "",
     period: "all", periodFrom: "", periodTo: "",
     stockStatusFilter: "all", salesStockStatusFilter: "all", stockBrandFilter: "",
-    distPosisiFilter: "", stokPosisiFilter: "", catalogEdit: null, stokAwalRows: [], stokAwalFileName: "", saGudang: "", saPosisi: "",
+    distPosisiFilter: "", distGudangFilter: "", stokPosisiFilter: "", catalogEdit: null, stokAwalRows: [], stokAwalFileName: "", saGudang: "", saPosisi: "",
     profileMenuOpen: false, pwError: "", pwSuccess: "", sidebarCollapsed: false,
     loginError: "", userForm: false },
 };
@@ -2849,6 +2849,7 @@ function posisiFilterSelect(current, handler) {
     '<option value="">Semua posisi</option>' + POSISI_LIST.map(x=>'<option value="'+x+'"'+(x===current?" selected":"")+'>'+x+'</option>').join("") + '</select></label>';
 }
 function onDistPosisiFilter(v) { state.ui.distPosisiFilter = v; render(); }
+function onDistGudangFilter(v) { state.ui.distGudangFilter = v; render(); }
 function onStokPosisiFilter(v) { state.ui.stokPosisiFilter = v; render(); }
 // ---------------- Input stok awal TEAM SALES (menu di Distribusi ke Team) ----------------
 // Hanya HQ & Admin Gudang Pusat. HQ = semua team nasional. Admin pusat = team di gudang pusat & gudang cabang cluster-nya.
@@ -3010,7 +3011,13 @@ function renderStokAwalSection() {
 }
 function renderDistribusi() {
   const salesListAll = mySalesTeam();
-  const salesList = state.ui.distPosisiFilter ? salesListAll.filter(s=>s.posisi===state.ui.distPosisiFilter) : salesListAll;
+  // Filter Gudang asal = gudang tempat sales terdaftar. Opsi hanya gudang yang punya sales di daftar user ini.
+  const distGudangIds = Array.from(new Set(salesListAll.map(s=>s.gudang).filter(Boolean)));
+  const distGudangOpts = distGudangIds.map(id => state.data.warehouses.find(w=>w.id===id)).filter(Boolean).sort((a,b)=>a.name.localeCompare(b.name));
+  if (state.ui.distGudangFilter && !distGudangIds.includes(state.ui.distGudangFilter)) state.ui.distGudangFilter = "";
+  const salesList = salesListAll.filter(s =>
+    (!state.ui.distPosisiFilter || s.posisi === state.ui.distPosisiFilter) &&
+    (!state.ui.distGudangFilter || s.gudang === state.ui.distGudangFilter));
   const warehouseOptions = isCabangAdmin() ? state.data.warehouses.filter(w=>w.id===myCabangId())
     : isPusatAdmin() ? state.data.warehouses.filter(w=>w.id===myGudangPusatId())
     : state.data.warehouses;
@@ -3035,7 +3042,11 @@ function renderDistribusi() {
     ) : "") +
   '</div>' +
   '<div class="grid grid-2-1" style="margin-top:20px">' +
-    '<div class="section"><div class="section-head"><h3>Stok saat ini di tim sales</h3>' + posisiFilterSelect(state.ui.distPosisiFilter, "onDistPosisiFilter") + '</div>' +
+    '<div class="section"><div class="section-head"><h3>Stok saat ini di tim sales (' + nfmt(salesList.length) + ')</h3>' +
+      '<div class="row" style="align-items:flex-end;gap:10px">' +
+        '<label class="field" style="min-width:220px"><span>Gudang asal</span><select class="input" onchange="onDistGudangFilter(this.value)"><option value="">Semua gudang</option>' + distGudangOpts.map(w=>'<option value="'+w.id+'"'+(w.id===state.ui.distGudangFilter?" selected":"")+'>'+esc(w.name)+'</option>').join("") + '</select></label>' +
+        posisiFilterSelect(state.ui.distPosisiFilter, "onDistPosisiFilter") +
+      '</div></div>' +
       (salesList.length ? (
         '<table class="tbl"><thead><tr><th>ID</th><th>Sales</th><th>Posisi</th><th>Gudang</th><th class="num">Total unit dipegang</th></tr></thead><tbody>' +
         salesList.map(s => {
@@ -3044,7 +3055,7 @@ function renderDistribusi() {
           return '<tr><td class="muted">'+esc(s.id)+'</td><td>'+esc(s.name)+'</td><td class="muted">'+esc(s.posisi||"-")+'</td><td class="muted">'+esc(gudangName)+'</td><td class="num">'+nfmt(total)+'</td></tr>';
         }).join("") +
         '</tbody></table>'
-      ) : '<p class="muted">' + (salesListAll.length ? 'Tidak ada anggota team dengan posisi ini.' : 'Belum ada anggota tim sales. Tambahkan dulu di menu Stok di Team.') + '</p>') +
+      ) : '<p class="muted">' + (salesListAll.length ? 'Tidak ada anggota team yang cocok dengan filter gudang/posisi ini.' : 'Belum ada anggota tim sales. Tambahkan dulu di menu Stok di Team.') + '</p>') +
     '</div>' +
     '<div class="section"><div class="section-head"><h3>Distribusikan Barang ke Team</h3></div>' +
       '<div class="stack" style="gap:12px">' +
