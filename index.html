@@ -231,6 +231,24 @@
   .progress-track { height: 12px; background: #efe9f5; border-radius: 999px; overflow: hidden; }
   .progress-fill { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, var(--red), var(--mint)); transition: width .15s ease; }
   .progress-pct { margin-top: 8px; text-align: right; font-size: 13px; font-weight: 700; color: var(--ink); }
+
+  /* confirm dialog, badge, kotak info */
+  .confirm-overlay { position: fixed; inset: 0; background: rgba(18,0,43,.6); z-index: 210; display: flex; align-items: center; justify-content: center; }
+  .confirm-card { width: 480px; max-width: 92vw; background: #fff; border-radius: 14px; padding: 22px 24px; box-shadow: 0 20px 50px rgba(0,0,0,.35); }
+  .confirm-title { font-size: 16px; font-weight: 700; color: var(--ink); margin-bottom: 8px; }
+  .confirm-body { font-size: 13px; color: var(--ink-muted); line-height: 1.6; }
+  .confirm-body b { color: var(--ink); }
+  .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+  .btn-danger { background: #c81e1e; color: #fff; }
+  .btn-danger:hover:not(:disabled) { background: #9f1212; }
+  .nav-badge { margin-left: auto; background: var(--red); color: #fff; font-size: 10.5px; font-weight: 700; border-radius: 999px; min-width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; font-style: normal; }
+  .warn-box { background: #fff4e5; border: 1px solid #ffd9a0; color: #92400e; border-radius: 10px; padding: 10px 14px; font-size: 13px; }
+  .danger-box { background: var(--red-light); border: 1px solid #ffc2c2; color: var(--red-dark); border-radius: 10px; padding: 10px 14px; font-size: 13px; }
+  .ok-box { background: #e8f7f0; border: 1px solid #b8e8d2; color: #0d7a4f; border-radius: 10px; padding: 10px 14px; font-size: 13px; }
+  .count-list { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink); line-height: 1.7; }
+  .radio-card { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+  .radio-card.sel { border-color: var(--red); background: var(--red-light); }
+  .radio-card small { display: block; color: var(--ink-muted); font-size: 12px; margin-top: 2px; }
   .legend-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-muted); margin-top: 4px; }
 </style>
 </head>
@@ -421,6 +439,20 @@ async function loadUsers() {
  * in older deployments, so this fails soft (empty list) instead of
  * breaking the whole app load.
  */
+async function loadDeleteRequests() {
+  try {
+    const data = await fetchAllRows('delete_requests', { orderBy: 'requested_at', ascending: false });
+    return data.map(r => ({
+      id: r.id, cluster: r.cluster, scope: r.scope,
+      requestedBy: r.requested_by, requestedByUsername: r.requested_by_username, requestedByName: r.requested_by_name,
+      status: r.status, requestedAt: r.requested_at, decidedAt: r.decided_at,
+      acknowledged: !!r.acknowledged, result: r.result
+    }));
+  } catch (e) {
+    console.warn("Tabel 'delete_requests' belum tersedia / tidak bisa dibaca:", e && e.message ? e.message : e);
+    return [];
+  }
+}
 async function loadAnnouncements() {
   try {
     const data = await fetchAllRows('announcements', { orderBy: 'sort_order', ascending: true });
@@ -740,7 +772,7 @@ const state = {
     allocationRows: [], allocationFileName: "", allocationGudang: "",
     period: "all", periodFrom: "", periodTo: "",
     stockStatusFilter: "all", salesStockStatusFilter: "all", stockBrandFilter: "",
-    distPosisiFilter: "", distGudangFilter: "", stokPosisiFilter: "", catalogEdit: null, stokAwalRows: [], stokAwalFileName: "", saGudang: "", saPosisi: "",
+    clearCluster: "", clearScope: "transaksi_stok", seenReq: {}, distPosisiFilter: "", distGudangFilter: "", stokPosisiFilter: "", catalogEdit: null, stokAwalRows: [], stokAwalFileName: "", saGudang: "", saPosisi: "",
     profileMenuOpen: false, pwError: "", pwSuccess: "", sidebarCollapsed: false,
     loginError: "", userForm: false },
 };
@@ -752,7 +784,7 @@ const state = {
 async function loadData() {
   try {
     // Load all data in parallel from normalized tables
-    const [products, warehouses, salesTeam, warehouseStock, salesStock, transactions, returItems, users, announcements] =
+    const [products, warehouses, salesTeam, warehouseStock, salesStock, transactions, returItems, users, announcements, deleteRequests] =
       await Promise.all([
         loadProducts(),
         loadWarehouses(),
@@ -762,7 +794,8 @@ async function loadData() {
         loadTransactions(),
         loadReturItems(),
         loadUsers(),
-        loadAnnouncements()
+        loadAnnouncements(),
+        loadDeleteRequests()
       ]);
 
     // Populate state with loaded data
@@ -775,7 +808,8 @@ async function loadData() {
       transactions,
       returItems,
       users,
-      announcements
+      announcements,
+      deleteRequests
     };
 
     // Initialize seed data if database is empty
@@ -2131,6 +2165,7 @@ async function doLogin() {
   state.ui.loginError = "";
   if (isCabangAdmin() && state.tab === "pusat") state.tab = "dashboard";
   render();
+  if (isPusatOrHQ()) pollDeleteRequests();
 }
 async function doLogout() {
   try { await sb.auth.signOut(); } catch (e) {}
@@ -3618,6 +3653,294 @@ function onAddUser() {
   addUser(username, password, name, role, cabangId, gudangPusat);
 }
 
+// ---------------- Hapus Data per cluster + approval HQ ----------------
+// Penghapusan sebenarnya dijalankan di database (fungsi SQL SECURITY DEFINER) dan hanya lolos untuk HQ.
+const CLEAR_SCOPES = {
+  transaksi_stok: { label: "Transaksi & stok saja", desc: "Hapus riwayat transaksi dan retur, serta nol-kan stok gudang dan stok team. Katalog barang dan daftar sales tetap ada." },
+  semua: { label: "Semua data cluster", desc: "Semua di atas, ditambah katalog barang dan daftar sales cluster. Gudang dan akun login tetap ada." }
+};
+function canClearData() { return isHQ() || isPusatAdmin(); }
+function pendingDeleteCount() { return (state.data.deleteRequests || []).filter(r => r.status === "pending").length; }
+function clearClusterList() {
+  return Array.from(new Set(state.data.warehouses.map(w => warehouseCluster(w)).filter(Boolean))).sort();
+}
+function clusterClearCounts(cluster, scope) {
+  const whIds = state.data.warehouses.filter(w => warehouseCluster(w) === cluster).map(w => w.id);
+  const salesIds = state.data.salesTeam.filter(s => whIds.includes(s.gudang)).map(s => s.id);
+  const prodIds = state.data.products.filter(p => p.cluster === cluster).map(p => p.id);
+  const loc = new Set(whIds.concat(salesIds));
+  const prod = new Set(prodIds);
+  const all = scope === "semua";
+  return {
+    transaksi: state.data.transactions.filter(t => loc.has(t.from) || loc.has(t.to) || (all && prod.has(t.productId))).length,
+    retur: state.data.returItems.filter(r => loc.has(r.sourceId) || (all && prod.has(r.productId))).length,
+    stokGudang: whIds.reduce((a, id) => a + Object.values(state.data.stock[id] || {}).reduce((x, y) => x + y, 0), 0),
+    stokTeam: salesIds.reduce((a, id) => a + Object.values(state.data.salesStock[id] || {}).reduce((x, y) => x + y, 0), 0),
+    sales: all ? salesIds.length : 0,
+    produk: all ? prodIds.length : 0
+  };
+}
+function clearCountsHtml(c, scope) {
+  return '<ul class="count-list">' +
+    '<li>Transaksi: <b>' + nfmt(c.transaksi) + '</b> baris</li>' +
+    '<li>Retur: <b>' + nfmt(c.retur) + '</b> baris</li>' +
+    '<li>Stok gudang dikosongkan: <b>' + nfmt(c.stokGudang) + '</b> unit</li>' +
+    '<li>Stok team dikosongkan: <b>' + nfmt(c.stokTeam) + '</b> unit</li>' +
+    (scope === "semua" ? '<li>Daftar sales dihapus: <b>' + nfmt(c.sales) + '</b></li><li>Katalog barang dihapus: <b>' + nfmt(c.produk) + '</b> produk</li>' : '') +
+  '</ul>';
+}
+function fmtDateTime(v) { return v ? new Date(v).toLocaleString("id-ID", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "-"; }
+function resultSummary(r) {
+  if (!r) return "";
+  const parts = [];
+  if (r.transaksi !== undefined) parts.push(nfmt(r.transaksi) + " transaksi");
+  if (r.retur) parts.push(nfmt(r.retur) + " retur");
+  if (r.produk) parts.push(nfmt(r.produk) + " produk");
+  if (r.sales) parts.push(nfmt(r.sales) + " sales");
+  return parts.join(", ");
+}
+function confirmDialog(opts) {
+  return new Promise(resolve => {
+    const el = document.createElement("div");
+    el.className = "confirm-overlay";
+    el.innerHTML = '<div class="confirm-card"><div class="confirm-title">' + esc(opts.title) + '</div><div class="confirm-body">' + opts.html + '</div>' +
+      (opts.requireText ? '<div style="margin-top:12px"><div class="muted" style="margin-bottom:4px">Ketik <b>' + esc(opts.requireText) + '</b> untuk melanjutkan</div><input class="input" id="cf-input" style="width:100%" autocomplete="off"></div>' : '') +
+      '<div class="confirm-actions"><button class="btn btn-ghost" id="cf-cancel">Batal</button>' +
+      '<button class="btn ' + (opts.danger ? 'btn-danger' : 'btn-primary') + '" id="cf-ok"' + (opts.requireText ? ' disabled' : '') + '>' + esc(opts.confirmText || "Ya") + '</button></div></div>';
+    document.body.appendChild(el);
+    const done = (v) => { el.remove(); resolve(v); };
+    el.querySelector("#cf-cancel").onclick = () => done(false);
+    el.querySelector("#cf-ok").onclick = () => done(true);
+    if (opts.requireText) {
+      const input = el.querySelector("#cf-input");
+      const ok = el.querySelector("#cf-ok");
+      input.oninput = () => { ok.disabled = input.value.trim().toLowerCase() !== opts.requireText.trim().toLowerCase(); };
+      input.focus();
+    }
+  });
+}
+// Progress merayap selama menunggu database (satu panggilan RPC tidak punya persentase nyata)
+function startCreep(from, to) {
+  let v = from;
+  progressSet(v);
+  const t = setInterval(() => { v = Math.min(to, v + 1); progressSet(v); }, 300);
+  return () => clearInterval(t);
+}
+function errMsg(e) { return (e && e.message) ? e.message : String(e); }
+
+function onClearCluster(v) { state.ui.clearCluster = v; render(); }
+function onClearScope(v) { state.ui.clearScope = v; render(); }
+
+async function onStartClear() {
+  if (!canClearData()) return;
+  const cluster = isHQ() ? (state.ui.clearCluster || "") : myCluster();
+  const scope = state.ui.clearScope || "transaksi_stok";
+  if (!cluster) return notify("Pilih cluster dulu", "error");
+  const c = clusterClearCounts(cluster, scope);
+  const summary = '<p>Cluster: <b>' + esc(cluster) + '</b><br>Cakupan: <b>' + esc(CLEAR_SCOPES[scope].label) + '</b></p>' + clearCountsHtml(c, scope);
+  if (isHQ()) {
+    const ok = await confirmDialog({ title: "Hapus data cluster " + cluster + "?", html: summary + '<p style="margin-top:10px"><b>Tindakan ini permanen dan tidak bisa dibatalkan.</b></p>', confirmText: "Ya, hapus sekarang", danger: true, requireText: cluster });
+    if (!ok) return;
+    await runHqClear(cluster, scope);
+  } else {
+    const ok = await confirmDialog({ title: "Apakah Anda yakin ingin menghapus data?", html: summary + '<p style="margin-top:10px">Permintaan akan dikirim ke <b>HQ</b>. Data baru dihapus setelah HQ menyetujui, dan penghapusan bersifat permanen.</p>', confirmText: "Ya, kirim permintaan ke HQ", danger: true });
+    if (!ok) return;
+    await submitClearRequest(scope);
+  }
+}
+async function runHqClear(cluster, scope) {
+  progressStart("Menghapus data cluster " + cluster, "Menjalankan penghapusan di database...");
+  const stop = startCreep(10, 75);
+  try {
+    const { data, error } = await sb.rpc("hq_clear_cluster", { p_cluster: cluster, p_scope: scope });
+    stop();
+    if (error) throw error;
+    progressSet(85, "Memuat ulang data..."); await tick();
+    await loadData();
+    state.data.deleteRequests = await loadDeleteRequests();
+    render();
+    progressSet(100, "Selesai"); await tick();
+    setTimeout(progressEnd, 450);
+    notify("Data cluster " + cluster + " berhasil dihapus (" + resultSummary(data) + ")");
+  } catch (e) {
+    stop(); progressEnd();
+    console.error("runHqClear error:", e);
+    notify("Gagal hapus data: " + errMsg(e), "error");
+  }
+}
+async function submitClearRequest(scope) {
+  progressStart("Mengirim permintaan ke HQ", "Menyimpan permintaan...");
+  progressSet(40);
+  try {
+    const { error } = await sb.rpc("request_cluster_clear", { p_scope: scope });
+    if (error) throw error;
+    progressSet(80, "Memperbarui status..."); await tick();
+    state.data.deleteRequests = await loadDeleteRequests();
+    render();
+    progressSet(100, "Terkirim"); await tick();
+    setTimeout(progressEnd, 450);
+    notify("Permintaan hapus data dikirim ke HQ, menunggu persetujuan");
+  } catch (e) {
+    progressEnd();
+    console.error("submitClearRequest error:", e);
+    notify("Gagal mengirim permintaan: " + errMsg(e), "error");
+  }
+}
+async function approveDeleteRequest(id) {
+  const r = (state.data.deleteRequests || []).find(x => x.id === id);
+  if (!r) return;
+  const c = clusterClearCounts(r.cluster, r.scope);
+  const ok = await confirmDialog({
+    title: "Setujui dan hapus data cluster " + r.cluster + "?",
+    html: '<p>Diminta oleh <b>' + esc(r.requestedByName || "-") + '</b> (' + esc(r.requestedByUsername || "-") + ')<br>Cakupan: <b>' + esc((CLEAR_SCOPES[r.scope]||{}).label || r.scope) + '</b></p>' + clearCountsHtml(c, r.scope) + '<p style="margin-top:10px"><b>Begitu disetujui, data langsung dihapus permanen.</b></p>',
+    confirmText: "Setujui & hapus data", danger: true, requireText: r.cluster
+  });
+  if (!ok) return;
+  progressStart("Menghapus data cluster " + r.cluster, "Menjalankan penghapusan di database...");
+  const stop = startCreep(10, 75);
+  try {
+    const { data, error } = await sb.rpc("approve_delete_request", { p_id: id });
+    stop();
+    if (error) throw error;
+    progressSet(85, "Memuat ulang data..."); await tick();
+    await loadData();
+    state.data.deleteRequests = await loadDeleteRequests();
+    render();
+    progressSet(100, "Selesai"); await tick();
+    setTimeout(progressEnd, 450);
+    notify("Disetujui. Data cluster " + r.cluster + " dihapus (" + resultSummary(data) + ")");
+  } catch (e) {
+    stop(); progressEnd();
+    console.error("approveDeleteRequest error:", e);
+    notify("Gagal menyetujui: " + errMsg(e), "error");
+  }
+}
+async function rejectDeleteRequest(id) {
+  const r = (state.data.deleteRequests || []).find(x => x.id === id);
+  if (!r) return;
+  const ok = await confirmDialog({ title: "Tolak permintaan hapus data?", html: '<p>Permintaan cluster <b>' + esc(r.cluster) + '</b> dari <b>' + esc(r.requestedByName || "-") + '</b> akan ditolak. Tidak ada data yang dihapus.</p>', confirmText: "Ya, tolak" });
+  if (!ok) return;
+  try {
+    const { error } = await sb.rpc("reject_delete_request", { p_id: id });
+    if (error) throw error;
+    state.data.deleteRequests = await loadDeleteRequests();
+    render();
+    notify("Permintaan ditolak");
+  } catch (e) {
+    console.error("rejectDeleteRequest error:", e);
+    notify("Gagal menolak: " + errMsg(e), "error");
+  }
+}
+async function ackDeleteRequest(id) {
+  try {
+    const { error } = await sb.rpc("ack_delete_request", { p_id: id });
+    if (error) throw error;
+    state.data.deleteRequests = await loadDeleteRequests();
+    render();
+  } catch (e) { notify("Gagal: " + errMsg(e), "error"); }
+}
+// Notifikasi untuk peminta (admin pusat): ditolak / disetujui
+function processRequestNotices() {
+  if (!state.session || !isPusatAdmin()) return;
+  (state.data.deleteRequests || []).filter(r => r.requestedBy === state.session.id && !r.acknowledged).forEach(r => {
+    if (state.ui.seenReq[r.id + r.status]) return;
+    state.ui.seenReq[r.id + r.status] = true;
+    if (r.status === "rejected") notify("Permintaan hapus data cluster " + r.cluster + " tidak disetujui. Silakan hubungi HQ.", "error");
+    if (r.status === "approved") notify("Permintaan hapus data cluster " + r.cluster + " disetujui HQ dan data sudah dihapus.");
+  });
+}
+let _pollBusy = false;
+async function pollDeleteRequests() {
+  if (_pollBusy || !state.session || !isPusatOrHQ()) return;
+  _pollBusy = true;
+  try {
+    const before = JSON.stringify(state.data.deleteRequests || []);
+    const list = await loadDeleteRequests();
+    state.data.deleteRequests = list;
+    processRequestNotices();
+    if (JSON.stringify(list) !== before) render();
+  } finally { _pollBusy = false; }
+}
+setInterval(pollDeleteRequests, 20000);
+
+function renderHapusData() {
+  const hq = isHQ();
+  const clusters = clearClusterList();
+  const cluster = hq ? (state.ui.clearCluster || "") : (myCluster() || "");
+  const scope = state.ui.clearScope || "transaksi_stok";
+  const mine = hq ? [] : (state.data.deleteRequests || []).filter(r => r.requestedBy === state.session.id);
+  const pending = mine.find(r => r.status === "pending");
+  const notices = mine.filter(r => !r.acknowledged && (r.status === "rejected" || r.status === "approved"));
+  let html = '<div class="stack">' +
+    '<div class="danger-box"><b>Hati-hati:</b> fitur ini menghapus data secara permanen dan tidak bisa dibatalkan. ' +
+      (hq ? 'Sebagai HQ, penghapusan langsung dijalankan setelah Anda mengetik nama cluster.' : 'Permintaan Anda akan dikirim ke HQ dan baru dijalankan setelah disetujui.') + '</div>';
+  notices.forEach(r => {
+    html += r.status === "rejected"
+      ? '<div class="danger-box"><b>Permintaan hapus data cluster ' + esc(r.cluster) + ' tidak disetujui.</b> Silakan hubungi HQ. <button class="link-btn" style="margin-left:10px" onclick="ackDeleteRequest(\'' + r.id + '\')">Mengerti</button></div>'
+      : '<div class="ok-box"><b>Permintaan hapus data cluster ' + esc(r.cluster) + ' disetujui HQ.</b> Data sudah dihapus' + (r.result ? ' (' + esc(resultSummary(r.result)) + ')' : '') + '. <button class="link-btn" style="margin-left:10px" onclick="ackDeleteRequest(\'' + r.id + '\')">Mengerti</button></div>';
+  });
+  if (pending) html += '<div class="warn-box"><b>Menunggu persetujuan HQ</b> untuk cluster ' + esc(pending.cluster) + ' (' + esc((CLEAR_SCOPES[pending.scope]||{}).label || pending.scope) + '), dikirim ' + esc(fmtDateTime(pending.requestedAt)) + '.</div>';
+
+  html += '<div class="section"><div class="section-head"><h3>Hapus data cluster</h3></div>' +
+    '<div class="row" style="align-items:flex-end;gap:12px;margin-bottom:14px">' +
+      '<label class="field" style="min-width:260px"><span>Cluster</span>' + (hq
+        ? '<select class="input" onchange="onClearCluster(this.value)"><option value="">Pilih cluster</option>' + clusters.map(c => '<option value="' + esc(c) + '"' + (c === cluster ? ' selected' : '') + '>' + esc(c) + '</option>').join("") + '</select>'
+        : '<select class="input" disabled><option>' + esc(cluster || "-") + '</option></select>') + '</label>' +
+    '</div>' +
+    '<div class="profile-menu-label" style="margin-bottom:8px">Cakupan penghapusan</div>' +
+    '<div class="stack" style="gap:8px;margin-bottom:14px">' +
+      Object.keys(CLEAR_SCOPES).map(k => '<label class="radio-card' + (scope === k ? ' sel' : '') + '"><input type="radio" name="clear-scope" value="' + k + '"' + (scope === k ? ' checked' : '') + ' onchange="onClearScope(this.value)"><span><b>' + esc(CLEAR_SCOPES[k].label) + '</b><small>' + esc(CLEAR_SCOPES[k].desc) + '</small></span></label>').join("") +
+    '</div>';
+  if (cluster) {
+    html += '<div class="profile-menu-label">Yang akan dihapus</div>' + clearCountsHtml(clusterClearCounts(cluster, scope), scope);
+  } else {
+    html += '<p class="muted">Pilih cluster untuk melihat ringkasan data yang akan dihapus.</p>';
+  }
+  html += '<div style="margin-top:16px"><button class="btn btn-danger" ' + ((!cluster || (!hq && pending)) ? 'disabled' : '') + ' onclick="onStartClear()">&#128465; Mulai hapus data</button></div>' +
+    '</div>';
+
+  if (!hq && mine.length) {
+    html += '<div class="section"><div class="section-head"><h3>Riwayat permintaan Anda</h3></div>' +
+      '<table class="tbl"><thead><tr><th>Dikirim</th><th>Cluster</th><th>Cakupan</th><th>Status</th></tr></thead><tbody>' +
+      mine.map(r => '<tr><td class="muted">' + esc(fmtDateTime(r.requestedAt)) + '</td><td>' + esc(r.cluster) + '</td><td class="muted">' + esc((CLEAR_SCOPES[r.scope]||{}).label || r.scope) + '</td><td>' +
+        (r.status === "pending" ? '<span class="badge badge-retur">Menunggu HQ</span>' : r.status === "approved" ? '<span class="badge badge-ok">Disetujui</span>' : '<span class="badge badge-err">Ditolak</span>') + '</td></tr>').join("") +
+      '</tbody></table></div>';
+  }
+  return html + '</div>';
+}
+function renderApproval() {
+  const all = state.data.deleteRequests || [];
+  const pending = all.filter(r => r.status === "pending");
+  const decided = all.filter(r => r.status !== "pending").slice(0, 20);
+  let html = '<div class="stack">' +
+    '<div class="section"><div class="section-head"><h3>Menunggu persetujuan (' + pending.length + ')</h3></div>';
+  if (!pending.length) {
+    html += '<p class="muted">Tidak ada permintaan hapus data yang menunggu persetujuan.</p>';
+  } else {
+    html += '<div class="stack" style="gap:12px">' + pending.map(r => {
+      const c = clusterClearCounts(r.cluster, r.scope);
+      return '<div class="section" style="border-color:#ffd9a0;background:#fffaf2">' +
+        '<div class="section-head" style="margin-bottom:8px"><h3>Cluster ' + esc(r.cluster) + '</h3><span class="muted">' + esc(fmtDateTime(r.requestedAt)) + '</span></div>' +
+        '<div style="font-size:13px">Diminta oleh <b>' + esc(r.requestedByName || "-") + '</b> <span class="muted">(' + esc(r.requestedByUsername || "-") + ')</span></div>' +
+        '<div style="font-size:13px;margin-top:4px">Cakupan: <b>' + esc((CLEAR_SCOPES[r.scope]||{}).label || r.scope) + '</b></div>' +
+        clearCountsHtml(c, r.scope) +
+        '<div class="row" style="margin-top:12px;gap:10px">' +
+          '<button class="btn btn-danger" onclick="approveDeleteRequest(\'' + r.id + '\')">&#10003; Approve &amp; hapus data</button>' +
+          '<button class="btn btn-ghost" style="color:#b91414;border-color:#ffc2c2" onclick="rejectDeleteRequest(\'' + r.id + '\')">&#10005; Reject</button>' +
+        '</div></div>';
+    }).join("") + '</div>';
+  }
+  html += '</div>';
+  if (decided.length) {
+    html += '<div class="section"><div class="section-head"><h3>Riwayat keputusan</h3></div>' +
+      '<table class="tbl"><thead><tr><th>Diminta</th><th>Cluster</th><th>Peminta</th><th>Cakupan</th><th>Status</th></tr></thead><tbody>' +
+      decided.map(r => '<tr><td class="muted">' + esc(fmtDateTime(r.requestedAt)) + '</td><td>' + esc(r.cluster) + '</td><td>' + esc(r.requestedByName || "-") + ' <span class="muted">(' + esc(r.requestedByUsername || "-") + ')</span></td><td class="muted">' + esc((CLEAR_SCOPES[r.scope]||{}).label || r.scope) + '</td><td>' +
+        (r.status === "approved" ? '<span class="badge badge-ok">Disetujui</span>' : '<span class="badge badge-err">Ditolak</span>') + '</td></tr>').join("") +
+      '</tbody></table></div>';
+  }
+  return html + '</div>';
+}
+
 function renderAnnouncements() {
   const list = [...(state.data.announcements||[])].sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
   return '<div class="stack">' +
@@ -3688,12 +4011,16 @@ const TABS = [
   { id: "riwayat", label: "Riwayat Transaksi" },
   { id: "users", label: "Kelola Pengguna" },
   { id: "announcements", label: "Info Berjalan" },
+  { id: "hapusdata", label: "Hapus Data" },
+  { id: "approval", label: "Approval for me" },
 ];
 function visibleTabs() {
   return TABS.filter(t => {
     if (t.id === "pusat") return isPusatOrHQ();
     if (t.id === "users") return isPusatOrHQ();
     if (t.id === "announcements") return isHQ();
+    if (t.id === "hapusdata") return isPusatOrHQ();
+    if (t.id === "approval") return isHQ();
     return true;
   });
 }
@@ -3706,6 +4033,8 @@ const TICKER_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAA
 const NAV_ICON_DEFS = '';
 
 const NAV_ICONS = {
+  hapusdata: '<path d="M4 7h16" fill="none"/><path d="M9 7V4h6v3" fill="none"/><path d="M6 7l1 13h10l1-13" fill="none"/><path d="M10 11v6M14 11v6" fill="none"/>',
+  approval: '<circle cx="12" cy="12" r="9" fill="none"/><path d="M8 12.5l2.8 2.8L16 9.5" fill="none"/>',
   dashboard: '<rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><circle cx="17" cy="17" r="4"/><path d="M17 13v4h4" fill="none"/>',
   katalog: '<path d="M12 3 21 7.5 21 16.5 12 21 3 16.5 3 7.5Z" fill="none"/><path d="M3 7.5 12 12 21 7.5" fill="none"/><path d="M12 12v9" fill="none"/>',
   pusat: '<path d="M4 11 12 4 20 11" fill="none"/><rect x="6" y="11" width="12" height="9" rx="1" fill="none"/><rect x="10" y="15" width="4" height="5" fill="none"/>',
@@ -3722,7 +4051,7 @@ function navIcon(id) {
   return '<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="#fff6f6" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + (NAV_ICONS[id]||"") + '</svg>';
 }
 
-function setTab(id) { state.tab = id; render(); }
+function setTab(id) { state.tab = id; render(); if (id === "approval" || id === "hapusdata") pollDeleteRequests(); }
 function toggleSidebar() { state.ui.sidebarCollapsed = !state.ui.sidebarCollapsed; render(); }
 
 function renderSidebar() {
@@ -3733,7 +4062,7 @@ function renderSidebar() {
     '<div class="sidebar-brand"><div class="sidebar-brand-row">' + BRAND_LOGO_SVG +
       '<div class="sidebar-brand-title"><img src="' + BRAND_LOGO_WORDMARK + '" alt="Inventory Management" class="brand-wordmark"><small>' + esc(isHQ() ? "All Cluster Nasional" : "Gudang Pusat") + '</small></div>' +
     '</div>' + (myCluster() ? '<div class="sidebar-brand-sub">' + esc(myCluster()) + '</div>' : '') + '</div>' +
-    '<div class="nav">' + NAV_ICON_DEFS + visibleTabs().map(t => '<button class="nav-item' + (state.tab===t.id?" active":"") + '" onclick="setTab(\''+t.id+'\')">'+navIcon(t.id)+'<span>'+t.label+'</span></button>').join("") + '</div>' +
+    '<div class="nav">' + NAV_ICON_DEFS + visibleTabs().map(t => '<button class="nav-item' + (state.tab===t.id?" active":"") + '" onclick="setTab(\''+t.id+'\')">'+navIcon(t.id)+'<span>'+t.label+'</span>'+(t.id==="approval" && pendingDeleteCount()>0 ? '<em class="nav-badge">'+pendingDeleteCount()+'</em>' : '')+'</button>').join("") + '</div>' +
     '<div class="sidebar-foot">' +
       '<div class="profile-card">' +
         '<div class="avatar-btn" style="width:34px;height:34px">' + avatarHtml(state.session) + '</div>' +
@@ -3899,6 +4228,8 @@ function renderTabContent() {
     case "riwayat": return renderRiwayat();
     case "users": return isPusatOrHQ() ? renderKelolaPengguna() : renderDashboard();
     case "announcements": return isHQ() ? renderAnnouncements() : renderDashboard();
+    case "hapusdata": return isPusatOrHQ() ? renderHapusData() : renderDashboard();
+    case "approval": return isHQ() ? renderApproval() : renderDashboard();
     default: return "";
   }
 }
@@ -3930,6 +4261,8 @@ function render() {
   if (isCabangAdmin() && state.tab === "pusat") state.tab = "dashboard";
   if (state.tab === "users" && !isPusatOrHQ()) state.tab = "dashboard";
   if (state.tab === "announcements" && !isHQ()) state.tab = "dashboard";
+  if (state.tab === "hapusdata" && !isPusatOrHQ()) state.tab = "dashboard";
+  if (state.tab === "approval" && !isHQ()) state.tab = "dashboard";
   root.innerHTML = renderSidebar() +
     '<div class="main">' + renderTopbar() + renderTicker() + '<div class="content">' + renderTabContent() + '</div></div>';
   if (state.tab === "cabang") renderAvailPusat();
@@ -3982,6 +4315,7 @@ window.addEventListener("error", function (e) {
     await loadData();
     await restoreSession();
     render();
+    if (state.session && isPusatOrHQ()) pollDeleteRequests();
   } catch (e) {
     console.error("Init error:", e);
     document.getElementById("root").innerHTML =
